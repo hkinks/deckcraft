@@ -98,6 +98,9 @@ pub fn title_bar(app: &mut SlideApp, ui: &mut Ui) {
             let from = app.session.active().map(|d| d.selection.slide).unwrap_or(0);
             app.start_show(from, false);
         }
+        if app.agent.is_some() && icon_toggle(&mut right, Icon::Star, "AI agent", has_doc, crate::agent::pane::is_open(app)).clicked() {
+            crate::agent::pane::toggle(app);
+        }
         if icon_toggle(&mut right, Icon::CommentsBubble, "Comments", has_doc, app.ui.pane.as_deref() == Some("comments")).clicked() {
             let _ = app.run("view.pane", json!({"pane": "comments", "toggle": true}));
         }

@@ -441,6 +441,8 @@ pub struct SlideApp {
     pub ui: UiState,
     pub textures: textures::Textures,
     pub control_rx: Option<Receiver<ControlRequest>>,
+    /// The agent chat pane and its link to the agent server (web app with a server only).
+    pub agent: Option<Box<agent::client::AgentClient>>,
     /// Spelling squiggles, checked on a worker thread.
     pub squiggles: squiggles::Squiggles,
     pub dialog: Option<dialogs::Dialog>,
@@ -540,6 +542,7 @@ impl SlideApp {
             ui: UiState::default(),
             textures: textures::Textures::default(),
             control_rx: None,
+            agent: None,
             squiggles: Default::default(),
             dialog: None,
             thesaurus_query: String::new(),
@@ -590,6 +593,11 @@ impl SlideApp {
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
         self
+    }
+
+    /// Connect the agent chat pane to an agent server.
+    pub fn set_agent_transport(&mut self, transport: Box<dyn agent::transport::AgentTransport>) {
+        self.agent = Some(Box::new(agent::client::AgentClient::new(transport)));
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -1804,6 +1812,7 @@ impl SlideApp {
         }
         let t0 = now_ms();
         let t = theme::Tokens::get(&ctx);
+        agent::client::tick(self, &ctx);
         self.tick_media(&ctx);
         eyedropper::tick(self, &ctx);
         self.opening_ui(&ctx);
@@ -1815,7 +1824,10 @@ impl SlideApp {
             return;
         }
         self.sync_backstage();
-        self.keyboard(&ctx);
+        // While the agent edits the deck, editing shortcuts are off (the agent pane still types).
+        if !agent::client::busy(self) {
+            self.keyboard(&ctx);
+        }
         self.sync_backstage();
         ribbon::title_bar(self, ui);
         if self.backstage.is_none() && self.session.active().is_some() {
@@ -1825,6 +1837,11 @@ impl SlideApp {
         let now = ui.input(|i| i.time);
         if self.tick_anim_preview(now) {
             ctx.request_repaint();
+        }
+        let mut agent_left = None;
+        if self.backstage.is_none() && self.session.active().is_some() && agent::pane::is_open(self) {
+            agent::pane::show(self, ui);
+            agent_left = Some(ui.available_rect_before_wrap().max.x);
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| {
             if self.backstage.is_some() {
@@ -1856,6 +1873,7 @@ impl SlideApp {
                 }
             }
         });
+        agent::pane::veil(self, &ctx, agent_left);
         toast::note_missing_fonts(self);
         toast::show(self, &ctx);
         dialogs::show(self, &ctx);
