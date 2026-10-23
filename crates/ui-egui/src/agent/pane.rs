@@ -297,12 +297,23 @@ fn status_pill(ui: &mut Ui, status: &str, reverted: bool, t: &Tokens) {
             "ok" | "" => ("✓ done", ok_color(t)),
             "stopped" => ("■ stopped", warn_color(t)),
             "interrupted" => ("! interrupted", warn_color(t)),
-            "limit" => ("! limit reached", warn_color(t)),
+            "limit" => ("! out of time", warn_color(t)),
             _ => ("× error", err_color(t)),
         }
     };
+    let tip = if reverted {
+        "This request's changes were taken back"
+    } else {
+        match status {
+            "ok" | "" => "The agent finished this request",
+            "stopped" => "You stopped this request; what it did so far stays",
+            "interrupted" => "The connection to the agent was lost during this request; what it did so far stays",
+            "limit" => "The request ran out of time (15 minutes) or steps (60); what it did so far stays. Continue finishes it",
+            _ => "The request failed; what it did so far stays",
+        }
+    };
     egui::Frame::NONE.fill(color.gamma_multiply(0.15)).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
-        ui.label(RichText::new(text).color(color).font(theme::font(META)));
+        ui.label(RichText::new(text).color(color).font(theme::font(META))).on_hover_text(tip);
     });
 }
 
@@ -323,6 +334,7 @@ enum TurnAction {
     GoTo(usize),
     RemoveQueued(usize),
     ResumeQueue,
+    Continue,
 }
 
 /// Revert (or Restore once reverted) as a real button.
@@ -414,6 +426,7 @@ fn apply(app: &mut SlideApp, action: Option<TurnAction>) {
         }
         Some(TurnAction::RemoveQueued(i)) => client::remove_queued(app, i),
         Some(TurnAction::ResumeQueue) => client::resume_queue(app),
+        Some(TurnAction::Continue) => client::queue_prompt(app, "Continue where you stopped and finish the request."),
         Some(TurnAction::Details) => {
             if let Some(a) = app.agent.as_mut() {
                 a.state.tab = PaneTab::Changes;
@@ -568,7 +581,16 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                             {
                                 action = Some(TurnAction::Details);
                             }
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, t, *i, c, running, reverted, &mut action));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                revert_button(ui, t, *i, c, running, reverted, &mut action);
+                                // Cut off by a limit: pick up where it stopped (the latest request only).
+                                if c.status == "limit" && !running && !reverted && *i + 1 == a.state.turns.len() {
+                                    let r = ui.add(egui::Button::new(RichText::new("Continue").font(theme::font(12.0)).color(t.accent_text)).fill(t.accent));
+                                    if r.on_hover_text("Ask the agent to finish this request").clicked() {
+                                        action = Some(TurnAction::Continue);
+                                    }
+                                }
+                            });
                         });
                         if a.state.confirm_revert == Some(*i) {
                             confirm_row(ui, *i, c, client::later_changes(app, *i), t, &mut action);

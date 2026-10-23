@@ -36,7 +36,8 @@ class ProviderCfg(BaseModel):
 class Limits(BaseModel):
     turns_per_minute: int = 6
     max_tool_calls_per_turn: int = 60
-    max_turn_seconds: float = 300
+    # Local models can take a minute per step on a big deck; Stop is always there.
+    max_turn_seconds: float = 900
     tool_call_timeout_seconds: float = 30
 
 

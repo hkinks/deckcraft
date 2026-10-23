@@ -434,3 +434,17 @@ fn the_prompt_keeps_focus_after_enter() {
     assert_eq!(h.ctx.memory(|m| m.focused()), Some(id));
     assert_eq!(client::queued(h.state()), vec!["then add a summary".to_string()]);
 }
+
+#[test]
+fn a_request_cut_off_by_a_limit_can_be_continued() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    client::send_prompt(h.state_mut(), "notes on every slide");
+    wire.push(ServerMsg::TurnEnd { turn_id: "turn-1".into(), summary: String::new(), actions: vec![], slides: vec![], status: "limit".into() });
+    h.run_steps(6);
+    assert!(h.query_all_by_label_contains("ran out of time").next().is_some(), "the chat says what happened");
+    h.get_by_label("Continue").click();
+    h.run_steps(2);
+    let sent = wire.sent_of("user_message");
+    assert_eq!(sent.len(), 2);
+    assert!(sent[1]["text"].as_str().unwrap().to_lowercase().contains("continue"));
+}

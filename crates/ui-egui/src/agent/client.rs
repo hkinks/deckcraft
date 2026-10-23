@@ -300,6 +300,9 @@ fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, ac
     };
     client.state.pending.clear();
     client.state.waiting_file = None;
+    if status == "limit" {
+        client.state.items.push(ChatItem::Notice("The agent ran out of time (or steps) for this request. What it did so far stays; Continue picks up where it stopped.".into()));
+    }
     // Files the agent read go with the turn; ones the person is waiting on stay.
     if let Some(ws) = app.workspace_mut() {
         let keep: std::collections::HashSet<String> = ws.user_ops.iter().map(|(p, _)| p.clone()).collect();
