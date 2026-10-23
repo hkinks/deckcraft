@@ -136,3 +136,12 @@ fn get_deck_json_takes_the_ways_models_name_a_location() {
     assert!(!ok);
     assert!(text.contains("masters"), "{text}");
 }
+
+#[test]
+fn the_agents_failed_commands_stay_out_of_the_status_bar() {
+    let (mut app, ctx) = app_with_deck();
+    app.status = None;
+    let (ok, _) = tools::execute(&mut app, &ctx, "run_command", &json!({"command": "add shape", "params": {}}), false);
+    assert!(!ok);
+    assert!(app.status.is_none(), "status bar shows {:?}", app.status);
+}

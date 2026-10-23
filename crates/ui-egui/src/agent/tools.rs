@@ -94,7 +94,12 @@ impl Backend for LiveBackend<'_> {
             return Err("the deck this turn was editing is no longer the active document".into());
         }
         let (req, _rx) = ControlRequest::new(method, params);
-        match control::handle(self.app, self.ctx, &req) {
+        // The agent hears about its own failures in the tool result; the person's status bar is
+        // theirs.
+        let status = self.app.status.clone();
+        let outcome = control::handle(self.app, self.ctx, &req);
+        self.app.status = status;
+        match outcome {
             Outcome::Done(v) => {
                 if v.get("ok").and_then(Value::as_bool) == Some(true) {
                     Ok(v.get("result").cloned().unwrap_or(Value::Null))
