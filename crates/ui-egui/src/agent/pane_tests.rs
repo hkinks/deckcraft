@@ -413,3 +413,24 @@ fn a_failed_step_says_why_without_hovering() {
     h.run_steps(2);
     assert!(h.query_all_by_label_contains("unknown command").next().is_some());
 }
+
+#[test]
+fn the_prompt_keeps_focus_after_enter() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    let id = egui::Id::new("agent_prompt");
+    h.ctx.memory_mut(|m| m.request_focus(id));
+    h.run_steps(1);
+    h.state_mut().agent.as_mut().unwrap().state.input = "make it pop".into();
+    h.run_steps(1);
+    h.key_press(Key::Enter);
+    h.run_steps(4);
+    assert_eq!(wire.sent_of("user_message").len(), 1);
+    assert_eq!(h.ctx.memory(|m| m.focused()), Some(id), "the field still has the focus");
+    // Typing goes straight on: a follow-up is queued behind the running request.
+    h.state_mut().agent.as_mut().unwrap().state.input = "then add a summary".into();
+    h.run_steps(1);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.ctx.memory(|m| m.focused()), Some(id));
+    assert_eq!(client::queued(h.state()), vec!["then add a summary".to_string()]);
+}

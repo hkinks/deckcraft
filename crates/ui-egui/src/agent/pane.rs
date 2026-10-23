@@ -599,7 +599,9 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
             // a little every frame (panels grow to fit their content).
             let w = (ui.available_width() - 26.0 - ui.spacing().item_spacing.x).max(40.0);
             let hint = if running { "Queue a follow-up…" } else { "Ask for a change…" };
-            let edit = ui.add(egui::TextEdit::multiline(&mut a.state.input).hint_text(hint).frame(egui::Frame::NONE).desired_rows(2).desired_width(w));
+            // A fixed id: the layout around the field changes as requests run and queue, and the
+            // field must keep its focus through that.
+            let edit = ui.add(egui::TextEdit::multiline(&mut a.state.input).id(egui::Id::new("agent_prompt")).hint_text(hint).frame(egui::Frame::NONE).desired_rows(2).desired_width(w));
             let can = !a.state.input.trim().is_empty();
             ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                 let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), if can { Sense::click() } else { Sense::hover() });
@@ -621,6 +623,8 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     if (send || enter) && !a.state.input.trim().is_empty() {
         let text = std::mem::take(&mut a.state.input);
         client::queue_prompt(app, &text);
+        // Keep typing: the next request (or a follow-up to queue) goes in the same field.
+        ui.memory_mut(|m| m.request_focus(egui::Id::new("agent_prompt")));
     }
 }
 
