@@ -121,7 +121,7 @@ fn header(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
             close = icon_button(ui, t, Icon::Close, "Close the agent pane", "Close the agent pane", !busy);
             if connected {
                 let r = ui.add_enabled(!busy, egui::Button::new(RichText::new("New chat").font(theme::font(12.0))).frame(false));
-                new_chat = r.on_hover_text("Start a new conversation about this deck (the change log stays)").clicked();
+                new_chat = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Start a new conversation about this deck (the change log stays)").clicked();
             }
             let Some(a) = app.agent.as_mut() else { return };
             let current = a.state.provider.clone().unwrap_or_default();
@@ -172,7 +172,7 @@ fn tabs(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         ] {
             let on = a.state.tab == tab;
             let text = RichText::new(label).font(if on { theme::bold(BODY) } else { theme::font(BODY) }).color(if on { t.text } else { t.text_dim });
-            let r = ui.add(egui::Label::new(text).sense(Sense::click())).on_hover_text(tip);
+            let r = ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
             if on {
                 ui.painter().hline(r.rect.x_range(), r.rect.bottom() + 4.0, Stroke::new(2.0, t.accent));
             }
@@ -505,7 +505,12 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                             slide_chips(ui, c, 3, &mut action);
                         });
                         ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new(RichText::new("Details").font(theme::font(12.0)).color(t.text_dim)).frame(false)).on_hover_text("Open this request in Changes").clicked() {
+                            if ui
+                                .add(egui::Button::new(RichText::new("Details").font(theme::font(12.0)).color(t.text_dim)).frame(false))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text("Open this request in Changes")
+                                .clicked()
+                            {
                                 action = Some(TurnAction::Details);
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, t, *i, c, running, reverted, &mut action));
@@ -529,7 +534,9 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let mut send = false;
     let enter = field(ui, |ui| {
         ui.horizontal(|ui| {
-            let w = ui.available_width() - 30.0;
+            // Exactly what is left beside the send button: any more and the pane widens itself
+            // a little every frame (panels grow to fit their content).
+            let w = (ui.available_width() - 26.0 - ui.spacing().item_spacing.x).max(40.0);
             let edit = ui.add_enabled(
                 !running,
                 egui::TextEdit::multiline(&mut a.state.input).hint_text("Ask for a change…").frame(egui::Frame::NONE).desired_rows(2).desired_width(w),

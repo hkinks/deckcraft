@@ -224,3 +224,26 @@ fn header_shows_the_friendly_model_name() {
     h.run_steps(3);
     h.get_by_label("Qwen 3.8 (local)");
 }
+
+#[test]
+fn pane_width_is_stable_while_the_pointer_moves_over_it() {
+    let (mut h, _) = after_turn("add a slide");
+    let x0 = h.get_by_role_and_label(egui::accesskit::Role::Label, "AI Agent").rect().left();
+    for i in 0..40 {
+        h.event(egui::Event::PointerMoved(egui::pos2(1300.0 + (i % 7) as f32, 400.0 + i as f32)));
+        h.run_steps(1);
+    }
+    let x1 = h.get_by_role_and_label(egui::accesskit::Role::Label, "AI Agent").rect().left();
+    assert!((x0 - x1).abs() < 0.5, "the pane grew from x={x0} to x={x1}");
+}
+
+#[test]
+fn tabs_show_a_pointing_hand() {
+    let (mut h, _) = harness(LinkStatus::Connected);
+    for label in ["Chat", "Changes (0)"] {
+        let c = h.get_by_label(label).rect().center();
+        h.event(egui::Event::PointerMoved(c));
+        h.run_steps(2);
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::PointingHand, "{label}");
+    }
+}
