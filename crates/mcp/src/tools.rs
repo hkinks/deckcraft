@@ -307,6 +307,27 @@ pub fn tool_definitions() -> Vec<Value> {
     ]
 }
 
+/// Models name the location in many ways: `path` for `pointer`, no leading slash, a number as a
+/// string. All of them mean the same thing.
+fn deck_json_args(mut a: Value) -> Value {
+    let Some(o) = a.as_object_mut() else { return a };
+    if !o.contains_key("pointer")
+        && let Some(p) = o.remove("path")
+    {
+        o.insert("pointer".into(), p);
+    }
+    if let Some(Value::String(p)) = o.get_mut("pointer")
+        && !p.is_empty()
+        && !p.starts_with('/')
+    {
+        p.insert(0, '/');
+    }
+    if let Some(n) = o.get("maxBytes").and_then(Value::as_str).and_then(|s| s.trim().parse::<u64>().ok()) {
+        o.insert("maxBytes".into(), json!(n));
+    }
+    a
+}
+
 fn exec(b: &mut dyn Backend, cmd: &str, params: Value) -> Result<Value, String> {
     b.call("engine.execute", json!({"command": cmd, "params": params}))
 }
@@ -349,7 +370,10 @@ fn unknown_argument_error(name: &str, args: &Value) -> Option<String> {
 }
 
 pub fn call_tool(b: &mut dyn Backend, name: &str, a: &Value) -> ToolResult {
-    let a = if a.is_object() { a.clone() } else { json!({}) };
+    let mut a = if a.is_object() { a.clone() } else { json!({}) };
+    if name == "get_deck_json" {
+        a = deck_json_args(a);
+    }
     if let Some(msg) = unknown_argument_error(name, &a) {
         return ToolResult::error(msg);
     }

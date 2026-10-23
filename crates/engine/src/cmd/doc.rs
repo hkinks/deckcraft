@@ -54,7 +54,10 @@ fn doc_value(s: &Session) -> Result<Value> {
 fn doc_json(s: &mut Session, p: &Value) -> Result<Value> {
     let full = doc_value(s)?;
     let v = match str_param(p, "pointer") {
-        Some(ptr) if !ptr.is_empty() => full.pointer(ptr).cloned().ok_or_else(|| bad("doc.json", format!("nothing at pointer {ptr}")))?,
+        Some(ptr) if !ptr.is_empty() => full.pointer(ptr).cloned().ok_or_else(|| {
+            let keys = full.as_object().map(|o| o.keys().map(|k| format!("/{k}")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            bad("doc.json", format!("nothing at pointer {ptr}; the top level has {keys} (e.g. the theme is at /masters/0/theme)"))
+        })?,
         _ => full,
     };
     let max = p.get("maxBytes").and_then(Value::as_u64).unwrap_or(DEFAULT_MAX_BYTES).clamp(64, MAX_MAX_BYTES) as usize;

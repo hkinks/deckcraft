@@ -118,3 +118,21 @@ fn check_refuses_switching_decks_and_undo() {
     assert!(tools::check("run_command", &json!({"command": "edit.undo"})).is_err());
     assert!(tools::check("run_command", &json!({"command": "edit.redo"})).is_err());
 }
+
+#[test]
+fn get_deck_json_takes_the_ways_models_name_a_location() {
+    let (mut app, ctx) = app_with_deck();
+    for input in [json!({}), json!({"pointer": "/slides/0"}), json!({"path": "/slides/0"}), json!({"pointer": "slides/0"}), json!({"maxBytes": "20000"})] {
+        let (ok, content) = tools::execute(&mut app, &ctx, "get_deck_json", &input, false);
+        let text = match &content[0] {
+            ContentPart::Text { text } => text.clone(),
+            ContentPart::Image { .. } => String::new(),
+        };
+        assert!(ok, "{input}: {text}");
+    }
+    // A pointer that leads nowhere says where to look.
+    let (ok, content) = tools::execute(&mut app, &ctx, "get_deck_json", &json!({"pointer": "/theme"}), false);
+    let ContentPart::Text { text } = &content[0] else { panic!() };
+    assert!(!ok);
+    assert!(text.contains("masters"), "{text}");
+}

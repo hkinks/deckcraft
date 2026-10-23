@@ -62,7 +62,8 @@ pub fn check(name: &str, input: &Value) -> Result<(), String> {
     if !ALLOWED_TOOLS.contains(&name) {
         return Err(format!("tool `{name}` is not allowed for the agent"));
     }
-    if input.get("path").is_some() {
+    // `path` names a file everywhere except in the deck JSON tools, where it is a JSON Pointer.
+    if input.get("path").is_some() && !matches!(name, "get_deck_json" | "patch_deck_json") {
         return Err(format!("`{name}`: file paths are not allowed for the agent"));
     }
     match name {
