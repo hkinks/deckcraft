@@ -75,9 +75,7 @@ pub fn title_bar(app: &mut SlideApp, ui: &mut Ui) {
         let has_doc = app.session.active().is_some();
         let dirty = app.session.active().is_some_and(|d| d.is_dirty());
         crate::qat::show(app, &mut child);
-        let title =
-            app.session.active().map(|d| format!("{}{}", d.title(), if dirty { " — Edited" } else { "" })).unwrap_or_else(|| "DeckCraft".into());
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, title, theme::font(13.0), t.text);
+        title_name(app, ui, rect, dirty, &t);
         // Right side.
         let mut right = ui.new_child(
             egui::UiBuilder::new()
@@ -464,6 +462,56 @@ fn slides_group(app: &mut SlideApp, ui: &mut Ui) {
             });
         });
     });
+}
+
+/// The presentation's name in the middle of the title bar: click it to rename (Enter keeps the
+/// new name, Esc or an empty name keeps the old one).
+fn title_name(app: &mut SlideApp, ui: &mut Ui, bar: Rect, dirty: bool, t: &Tokens) {
+    let id = egui::Id::new("presentation_title_edit");
+    let Some((name, saved_to_file)) = app.session.active().map(|d| (d.title(), d.path.is_some())) else {
+        ui.painter().text(bar.center(), Align2::CENTER_CENTER, "DeckCraft", theme::font(13.0), t.text);
+        return;
+    };
+    if let Some(draft) = app.title_edit.as_mut() {
+        let r = Rect::from_center_size(bar.center(), vec2(280.0, (bar.height() - 8.0).max(18.0)));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
+        let edit = child.add(egui::TextEdit::singleline(draft).id(id).font(theme::font(13.0)).horizontal_align(egui::Align::Center).desired_width(r.width()));
+        edit.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Presentation name"));
+        if !edit.has_focus() && !edit.lost_focus() {
+            edit.request_focus();
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(draft.chars().count()))));
+                state.store(ui.ctx(), id);
+            }
+        }
+        let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if cancel {
+            app.title_edit = None;
+        } else if edit.lost_focus() {
+            let new = app.title_edit.take().unwrap_or_default();
+            if new.trim() != name {
+                app.rename_presentation(&new);
+            }
+        }
+        return;
+    }
+    let text = format!("{name}{}", if dirty { " — Edited" } else { "" });
+    let galley = ui.painter().layout_no_wrap(text, theme::font(13.0), t.text);
+    let r = Rect::from_center_size(bar.center(), galley.size() + vec2(12.0, 6.0));
+    let resp = ui.interact(r, id.with("label"), egui::Sense::click());
+    if resp.hovered() && !saved_to_file {
+        ui.painter().rect_filled(r, egui::CornerRadius::same(4), t.hover);
+    }
+    ui.painter().galley(r.center() - galley.size() / 2.0, galley, t.text);
+    let tip = if saved_to_file { "Saved to a file: use File › Save As to give it another name" } else { "Rename the presentation" };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Presentation name"));
+    let resp = resp.on_hover_text(tip);
+    if !saved_to_file {
+        let resp = resp.on_hover_cursor(egui::CursorIcon::Text);
+        if resp.clicked() {
+            app.title_edit = Some(name);
+        }
+    }
 }
 
 pub fn font_families(app: &SlideApp) -> Vec<String> {

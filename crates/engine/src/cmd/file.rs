@@ -30,6 +30,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(noundo "file.openBytes", "Open Data", [], None, "{name, data: base64}", always, open_bytes),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?, format?: deckcraft|pptx}", has_doc, save),
+        cmd!(noundo "file.rename", "Rename", [], None, "{title} — the presentation's name (what Save and download call it); a presentation saved to a file is renamed with Save As", has_doc, rename),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path, format?}", has_doc, save_as),
         cmd!(noundo "file.saveTemplate", "Save as Template…", ["File"], None, "{path}", has_doc, save_as),
         cmd!(query "file.saveBytes", "Save to Data", [], None, "{format?: deckcraft|pptx} → {data: base64}", has_doc, save_bytes_cmd),
@@ -435,6 +436,19 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     write_file(&path, &bytes)?;
     mark_saved(s, Some(path.clone()))?;
     Ok(json!({"path": path, "bytes": bytes.len()}))
+}
+
+fn rename(s: &mut Session, p: &Value) -> Result<Value> {
+    let title: String = str_param(p, "title").unwrap_or("").trim().chars().filter(|c| !c.is_control() && !matches!(c, '/' | '\\')).take(200).collect();
+    if title.is_empty() {
+        return Err(bad("file.rename", "the name can't be empty"));
+    }
+    let d = s.doc_mut()?;
+    if d.path.is_some() {
+        return Err(bad("file.rename", "this presentation is saved to a file: use Save As to give it another name"));
+    }
+    d.title = title.clone();
+    Ok(json!({"title": title}))
 }
 
 fn save_as(s: &mut Session, p: &Value) -> Result<Value> {

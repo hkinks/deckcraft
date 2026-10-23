@@ -128,3 +128,38 @@ mod per_deck {
         assert_eq!(app.workspaces.len(), app.session.documents().len());
     }
 }
+
+mod rename {
+    use deckcraft_engine::Session;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use crate::{Services, SlideApp};
+
+    #[test]
+    fn clicking_the_title_renames_the_presentation() {
+        let app = SlideApp::new(Session::with_new(), Services::default());
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Presentation name").click();
+        h.run_steps(2);
+        h.get_by_label("Presentation name").type_text("Q4 kickoff");
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(h.state().session.active().unwrap().title(), "Q4 kickoff");
+        // Esc keeps the name.
+        h.get_by_label("Presentation name").click();
+        h.run_steps(2);
+        h.get_by_label("Presentation name").type_text("nope");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert_eq!(h.state().session.active().unwrap().title(), "Q4 kickoff");
+    }
+}

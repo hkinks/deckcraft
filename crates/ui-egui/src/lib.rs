@@ -454,6 +454,8 @@ pub struct SlideApp {
     /// Each open deck's workspace folder (materials for the person and the agent), by document.
     pub workspaces: std::collections::HashMap<u64, workspace::Workspace>,
     pub workspace_factory: Option<workspace::WorkspaceFactory>,
+    /// The presentation name being edited in the title bar.
+    pub title_edit: Option<String>,
     /// Spelling squiggles, checked on a worker thread.
     pub squiggles: squiggles::Squiggles,
     pub dialog: Option<dialogs::Dialog>,
@@ -558,6 +560,7 @@ impl SlideApp {
             webfonts: None,
             workspaces: Default::default(),
             workspace_factory: None,
+            title_edit: None,
             squiggles: Default::default(),
             dialog: None,
             thesaurus_query: String::new(),

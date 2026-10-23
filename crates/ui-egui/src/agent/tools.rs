@@ -49,7 +49,8 @@ pub fn advertised() -> Vec<Value> {
 
 fn check_command(c: &Value) -> Result<(), String> {
     let id = c.get("command").and_then(Value::as_str).ok_or("missing `command`")?;
-    if REFUSED_COMMAND_PREFIXES.iter().any(|p| id.starts_with(p)) || REFUSED_COMMANDS.contains(&id) {
+    // Naming the deck is the one file command the agent may use.
+    if id != "file.rename" && (REFUSED_COMMAND_PREFIXES.iter().any(|p| id.starts_with(p)) || REFUSED_COMMANDS.contains(&id)) {
         return Err(format!("command `{id}` is not allowed for the agent: it can only change the open deck"));
     }
     if c.get("params").and_then(|p| p.get("path")).is_some() {

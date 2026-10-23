@@ -274,6 +274,25 @@ impl crate::SlideApp {
         self.workspaces.get_mut(&uid)
     }
 
+    /// Rename the presentation; its workspace folder is remembered under the new name too.
+    pub fn rename_presentation(&mut self, title: &str) {
+        match self.run("file.rename", serde_json::json!({"title": title})) {
+            Ok(_) => {
+                if let Some(d) = self.session.active() {
+                    let key = workspace_key(d);
+                    let uid = d.uid;
+                    if let Some(ws) = self.workspaces.get(&uid)
+                        && ws.folder_name().is_some()
+                    {
+                        let host = ws.host.share(&key);
+                        self.workspaces.insert(uid, Workspace::new(host));
+                    }
+                }
+            }
+            Err(e) => self.set_status(e.to_string()),
+        }
+    }
+
     /// The person's action on a workspace file (done once it's read).
     pub fn workspace_action(&mut self, path: &str, op: UserOp) {
         if let Some(ws) = self.workspace_mut() {

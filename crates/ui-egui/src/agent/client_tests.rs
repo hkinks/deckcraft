@@ -659,3 +659,32 @@ fn workspace_paths_are_found_the_ways_models_write_them() {
     assert_eq!(r[4]["ok"], false);
     assert!(result_text(&r[4]).contains("brief.md"), "suggests the near miss: {}", result_text(&r[4]));
 }
+
+#[test]
+fn a_request_typed_while_reconnecting_waits_for_the_handshake() {
+    let (mut app, ctx, wire) = setup();
+    // The server restarts: the link drops and comes back, but hasn't answered hello yet.
+    *wire.status.borrow_mut() = Some(LinkStatus::Connecting);
+    client::tick(&mut app, &ctx);
+    *wire.status.borrow_mut() = Some(LinkStatus::Connected);
+    client::tick(&mut app, &ctx);
+    assert_eq!(wire.sent_of("hello").len(), 2, "hello again on the new connection");
+    client::queue_prompt(&mut app, "add market research");
+    client::tick(&mut app, &ctx);
+    assert!(wire.sent_of("user_message").is_empty(), "not before the server is ready");
+    assert!(!client::busy(&app));
+    wire.push(ServerMsg::Ready {
+        user: "ana".into(),
+        providers: vec![ProviderInfo { id: "q".into(), model: "qwen".into(), vision: false, label: String::new() }],
+        default_provider: "q".into(),
+        instructions: String::new(),
+        default_instructions: String::new(),
+    });
+    client::tick(&mut app, &ctx);
+    wire.push(ServerMsg::History { conversation_id: None, items: vec![] });
+    client::tick(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    let sent = wire.sent_of("user_message");
+    assert_eq!(sent.len(), 1, "sent once the server is ready");
+    assert_eq!(sent[0]["text"], "add market research");
+}

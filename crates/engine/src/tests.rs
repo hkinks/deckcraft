@@ -4139,3 +4139,13 @@ fn label_undo_since_prefixes_only_the_new_steps() {
     assert!(labels[labels.len() - n..].iter().all(|l| l.starts_with("AI: ")));
     assert_eq!(s.label_undo_since(uid, &s.active().unwrap().doc.clone(), "AI: "), 0);
 }
+
+#[test]
+fn rename_sets_an_unsaved_presentations_name() {
+    let mut s = Session::with_new();
+    s.execute("file.rename", &json!({"title": "  Q4 kickoff / draft  "})).unwrap();
+    assert_eq!(s.active().unwrap().title(), "Q4 kickoff  draft");
+    assert!(s.execute("file.rename", &json!({"title": "   "})).is_err(), "a name can't be empty");
+    s.active_mut().unwrap().path = Some("/tmp/deck.pptx".into());
+    assert!(s.execute("file.rename", &json!({"title": "Other"})).is_err(), "saved files are renamed with Save As");
+}

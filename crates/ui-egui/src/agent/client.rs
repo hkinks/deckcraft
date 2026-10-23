@@ -647,7 +647,9 @@ pub fn queue_prompt(app: &mut SlideApp, text: &str) {
     if text.is_empty() {
         return;
     }
-    if matches!(client.state.turn, TurnState::Idle) && client.state.queue.is_empty() {
+    // Straight out only to a server that has answered hello (after a reconnect it hasn't yet):
+    // otherwise it waits in the queue and goes when the link is ready.
+    if matches!(client.state.turn, TurnState::Idle) && client.state.queue.is_empty() && client.state.ready {
         client.state.queue_paused = false;
         send_prompt(app, text);
     } else {
@@ -683,6 +685,14 @@ pub fn send_prompt(app: &mut SlideApp, text: &str) {
     let Some(mut client) = app.agent.take() else { return };
     let text = text.trim().to_string();
     if text.is_empty() || matches!(client.state.turn, TurnState::Running { .. }) || app.session.active().is_none() {
+        app.agent = Some(client);
+        return;
+    }
+    if !client.state.ready {
+        // Not connected yet (or reconnecting): it goes as soon as the server is ready.
+        if let Some(uid) = app.session.active().map(|d| d.uid) {
+            client.state.queue.push_back((uid, text));
+        }
         app.agent = Some(client);
         return;
     }
