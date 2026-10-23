@@ -6,6 +6,7 @@ pub mod pane;
 pub mod protocol;
 pub mod tools;
 pub mod transport;
+pub mod workspace_tools;
 
 #[cfg(test)]
 mod client_tests;

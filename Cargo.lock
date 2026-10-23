@@ -1179,11 +1179,13 @@ dependencies = [
  "deckcraft-text",
  "egui",
  "egui_kittest",
+ "image",
  "js-sys",
  "log",
  "serde",
  "serde_json",
  "toml",
+ "zip",
 ]
 
 [[package]]

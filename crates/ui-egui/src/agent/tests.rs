@@ -126,7 +126,7 @@ fn get_deck_json_takes_the_ways_models_name_a_location() {
         let (ok, content) = tools::execute(&mut app, &ctx, "get_deck_json", &input, false);
         let text = match &content[0] {
             ContentPart::Text { text } => text.clone(),
-            ContentPart::Image { .. } => String::new(),
+            _ => String::new(),
         };
         assert!(ok, "{input}: {text}");
     }

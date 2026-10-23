@@ -343,3 +343,61 @@ fn instructions_tab_edits_and_saves_the_agents_working_style() {
     h.run_steps(2);
     assert_eq!(wire.sent_of("set_instructions")[1]["text"], "");
 }
+
+fn with_files(h: &mut Harness<'static, SlideApp>, files: &[(&str, &[u8])]) -> crate::workspace_fake::FakeHost {
+    let host = crate::workspace_fake::FakeHost::with(files);
+    h.state_mut().set_workspace_host(Box::new(host.clone()));
+    host
+}
+
+#[test]
+fn files_tab_offers_to_open_a_folder() {
+    let (mut h, _) = harness(LinkStatus::Connected);
+    let host = with_files(&mut h, &[]);
+    host.0.borrow_mut().name.clear();
+    h.run_steps(2);
+    h.get_by_label("Files").click();
+    h.run_steps(2);
+    h.get_by_label("Open folder…").click();
+    h.run_steps(2);
+    assert!(host.0.borrow().picked, "the folder picker opened");
+}
+
+#[test]
+fn files_tab_lists_the_folder_and_acts_on_a_file() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    let host = with_files(&mut h, &[("AGENT.md", b"Audience: board"), ("brief.md", b"Ship in March"), ("img/logo.png", b"png"), ("brand/Corporate.potx", b"x")]);
+    h.run_steps(2);
+    h.get_by_label("Files").click();
+    h.run_steps(2);
+    h.get_by_label("Launch");
+    h.get_by_label("brief.md");
+    h.get_by_label("logo.png");
+    // Ask the agent about a file: the prompt names it and the chat opens.
+    h.get_by_label("brief.md").click();
+    h.run_steps(2);
+    h.get_by_label("Ask agent").click();
+    h.run_steps(2);
+    let input = h.state().agent.as_ref().unwrap().state.input.clone();
+    assert!(input.contains("brief.md"), "{input}");
+    assert_eq!(h.state().agent.as_ref().unwrap().state.tab, client::PaneTab::Chat);
+    // Project instructions are read and go with the next request.
+    host.0.borrow_mut().instant = true;
+    h.run_steps(4);
+    client::send_prompt(h.state_mut(), "draft the deck");
+    let sent = wire.sent_of("user_message");
+    assert_eq!(sent[0]["deck"]["workspace"]["instructions"], "Audience: board");
+}
+
+#[test]
+fn files_tab_filter_narrows_the_list() {
+    let (mut h, _) = harness(LinkStatus::Connected);
+    with_files(&mut h, &[("brief.md", b"x"), ("data/q3.csv", b"y")]);
+    h.run_steps(2);
+    h.get_by_label("Files").click();
+    h.run_steps(2);
+    h.state_mut().agent.as_mut().unwrap().state.file_filter = "csv".into();
+    h.run_steps(2);
+    assert!(h.query_by_label("brief.md").is_none());
+    h.get_by_label("q3.csv");
+}

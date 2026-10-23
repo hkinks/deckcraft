@@ -24,6 +24,9 @@ egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# Reading .docx files and picture sizes in the workspace.
+zip = { workspace = true }
+image = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

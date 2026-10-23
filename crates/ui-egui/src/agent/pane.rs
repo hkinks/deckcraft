@@ -9,7 +9,7 @@
 //! and the agent is told about the user's.
 
 use egui::text::LayoutJob;
-use egui::{Align, Color32, CornerRadius, Layout, RichText, Sense, Stroke, TextFormat, Ui, vec2};
+use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, TextFormat, Ui, vec2};
 
 use super::client::{self, ChatItem, PaneTab, RevertOutcome, TurnCard, TurnState};
 use super::transport::LinkStatus;
@@ -94,6 +94,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
                     match app.agent.as_ref().map_or(PaneTab::Chat, |a| a.state.tab) {
                         PaneTab::Chat => chat(app, ui, &t),
                         PaneTab::Changes => changes(app, ui, &t),
+                        PaneTab::Files => files(app, ui, &t),
                         PaneTab::Instructions => instructions(app, ui, &t),
                     }
                 }
@@ -169,14 +170,19 @@ fn deck_turns(app: &SlideApp) -> Vec<(usize, TurnCard)> {
 /// Underline tabs: Chat | Changes (n).
 fn tabs(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let n = deck_turns(app).len();
+    let has_files = app.workspace.is_some();
     let Some(a) = app.agent.as_mut() else { return };
     let row = ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 16.0;
-        for (tab, label, tip) in [
+        ui.spacing_mut().item_spacing.x = 14.0;
+        let mut tabs = vec![
             (PaneTab::Chat, "Chat".to_string(), "The conversation"),
             (PaneTab::Changes, format!("Changes ({n})"), "Everything the agent changed in this deck, with Revert"),
-            (PaneTab::Instructions, "Instructions".to_string(), "How the agent should work: your standing instructions"),
-        ] {
+        ];
+        if has_files {
+            tabs.push((PaneTab::Files, "Files".to_string(), "Your workspace folder: materials for you and the agent"));
+        }
+        tabs.push((PaneTab::Instructions, "Instructions".to_string(), "How the agent should work: your standing instructions"));
+        for (tab, label, tip) in tabs {
             let on = a.state.tab == tab;
             let text = RichText::new(label).font(if on { theme::bold(BODY) } else { theme::font(BODY) }).color(if on { t.text } else { t.text_dim });
             let r = ui.add(egui::Label::new(text).selectable(false).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
@@ -610,6 +616,201 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         let text = std::mem::take(&mut a.state.input);
         client::queue_prompt(app, &text);
     }
+}
+
+/// The workspace folder: its files, with what each can be used for.
+fn files(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
+    use crate::workspace::{Kind, UserOp, WsStatus, kind_of, size_label};
+    let Some(ws) = app.workspace.as_ref() else { return };
+    let status = ws.host.status();
+    let mut pick = false;
+    let mut reconnect = false;
+    let mut forget = false;
+    let mut refresh = false;
+    let empty_state = |ui: &mut Ui, title: &str, body: &str| {
+        ui.add_space(10.0);
+        ui.vertical_centered(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 20.0, t.accent.gamma_multiply(0.12));
+            icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(22.0, 22.0)), Icon::OpenFolder, t.accent, false);
+            ui.add_space(4.0);
+            ui.label(RichText::new(title).font(theme::bold(BODY)).color(t.text));
+            ui.add(egui::Label::new(RichText::new(body).font(theme::font(12.0)).color(t.text_dim)).halign(Align::Center).wrap());
+        });
+        ui.add_space(6.0);
+    };
+    match &status {
+        WsStatus::None | WsStatus::Failed(_) => {
+            empty_state(
+                ui,
+                "Open a workspace folder",
+                "Keep briefs, notes, data, pictures, draft decks and style templates in a folder. You and the agent can use them from here. Files stay on your computer; the agent reads one only when it needs it.",
+            );
+            if let WsStatus::Failed(e) = &status {
+                ui.label(RichText::new(e).font(theme::font(12.0)).color(err_color(t)));
+            }
+            ui.vertical_centered(|ui| pick = primary_button(ui, t, "Open folder…").clicked());
+            ui.add_space(6.0);
+            ui.label(RichText::new("Tip: an AGENT.md file in the folder gives the agent standing instructions for this project.").font(theme::font(META)).color(t.text_faint));
+        }
+        WsStatus::NeedsPermission { name } => {
+            empty_state(ui, name, "The browser needs your OK to read this folder again.");
+            ui.vertical_centered(|ui| {
+                reconnect = primary_button(ui, t, "Reconnect").clicked();
+                forget = ui.add(egui::Button::new(RichText::new("Use another folder").font(theme::font(12.0))).frame(false)).clicked();
+            });
+        }
+        WsStatus::Loading { name } => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(format!("Reading “{name}”…")).color(t.text_dim));
+            });
+        }
+        WsStatus::Ready { name } => {
+            let files = ws.host.files();
+            let has_agent_md = crate::workspace::instructions_file(&files).is_some();
+            let busy_paths: Vec<String> = ws.user_ops.iter().map(|(p, _)| p.clone()).collect();
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                icons::paint(ui.painter(), r, Icon::Folder, t.accent, false);
+                ui.label(RichText::new(name).font(theme::bold(BODY)).color(t.text));
+                ui.label(RichText::new(format!("{} files", files.len())).font(theme::font(META)).color(t.text_faint));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    forget = ui.add(egui::Button::new(RichText::new("Close").font(theme::font(12.0)).color(t.text_dim)).frame(false)).on_hover_text("Stop using this folder").clicked();
+                    pick = ui.add(egui::Button::new(RichText::new("Change…").font(theme::font(12.0)).color(t.text_dim)).frame(false)).on_hover_text("Open another folder").clicked();
+                    refresh = icon_button(ui, t, Icon::Redo, "Refresh", "Read the folder again", true);
+                });
+            });
+            if has_agent_md {
+                ui.label(RichText::new("AGENT.md: project instructions go with every request").font(theme::font(META)).color(ok_color(t)));
+            }
+            let Some(a) = app.agent.as_mut() else { return };
+            field(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    icons::paint(ui.painter(), r, Icon::Search, t.text_faint, false);
+                    ui.add(egui::TextEdit::singleline(&mut a.state.file_filter).hint_text("Filter files…").frame(egui::Frame::NONE).desired_width(f32::INFINITY));
+                });
+            });
+            let filter = a.state.file_filter.to_lowercase();
+            let mut open = a.state.file_open.clone();
+            let mut act: Option<(String, Option<UserOp>)> = None;
+            egui::ScrollArea::vertical().id_salt("agent_files").auto_shrink([false, false]).show(ui, |ui| {
+                let mut dir = String::new();
+                for f in files.iter().filter(|f| filter.is_empty() || f.path.to_lowercase().contains(&filter)) {
+                    let (parent, file) = f.path.rsplit_once('/').unwrap_or(("", f.path.as_str()));
+                    if parent != dir {
+                        dir = parent.to_string();
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(format!("{dir}/")).font(theme::font(META)).color(t.text_faint));
+                    }
+                    let kind = kind_of(&f.path);
+                    let icon = match kind {
+                        Kind::Image => Icon::Picture,
+                        Kind::Deck => Icon::Slide,
+                        Kind::Theme => Icon::Themes,
+                        Kind::Text if f.path.to_lowercase().ends_with(".csv") => Icon::Table,
+                        _ => Icon::Notes,
+                    };
+                    let is_open = open.as_deref() == Some(f.path.as_str());
+                    let mut head = Rect::NOTHING;
+                    egui::Frame::NONE.fill(if is_open { t.selected } else { egui::Color32::TRANSPARENT }).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(4, 2)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        head = ui.horizontal(|ui| {
+                            let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                            icons::paint(ui.painter(), r, icon, t.text_dim, false);
+                            // Painted, not a widget: the row itself is the file's one button.
+                            let size = RichText::new(size_label(f.size)).font(theme::font(META)).color(t.text_faint);
+                            let w = (ui.available_width() - 56.0).max(40.0);
+                            let galley = egui::WidgetText::from(RichText::new(file).font(theme::font(12.5)).color(t.text)).into_galley(ui, Some(egui::TextWrapMode::Truncate), w, egui::TextStyle::Body);
+                            let (r, _) = ui.allocate_exact_size(vec2(w, galley.size().y.max(16.0)), Sense::hover());
+                            ui.painter().galley(egui::pos2(r.left(), r.center().y - galley.size().y / 2.0), galley, t.text);
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if busy_paths.contains(&f.path) {
+                                    ui.spinner();
+                                } else {
+                                    ui.add(egui::Label::new(size).selectable(false));
+                                }
+                            });
+                        })
+                        .response
+                        .rect;
+                        if is_open {
+                            ui.horizontal_wrapped(|ui| {
+                                let chip = |ui: &mut Ui, label: &str, tip: &str| ui.add(egui::Button::new(RichText::new(label).font(theme::font(12.0))).corner_radius(CornerRadius::same(10)).stroke(Stroke::new(1.0, t.border))).on_hover_text(tip).clicked();
+                                match kind {
+                                    Kind::Deck => {
+                                        if chip(ui, "Open", "Open it as a presentation") {
+                                            act = Some((f.path.clone(), Some(UserOp::Open)));
+                                        }
+                                        if chip(ui, "Apply design", "Use its theme (colours, fonts, effects) in this deck") {
+                                            act = Some((f.path.clone(), Some(UserOp::ApplyDesign)));
+                                        }
+                                    }
+                                    Kind::Theme if chip(ui, "Apply design", "Use this theme in this deck") => {
+                                        act = Some((f.path.clone(), Some(UserOp::ApplyDesign)));
+                                    }
+                                    Kind::Image if chip(ui, "Insert", "Put the picture on this slide") => {
+                                        act = Some((f.path.clone(), Some(UserOp::Insert)));
+                                    }
+                                    _ => {}
+                                }
+                                if chip(ui, "Ask agent", "Write a request about this file") {
+                                    act = Some((f.path.clone(), None));
+                                }
+                            });
+                        }
+                    });
+                    // The name line toggles the file's actions (the chips below stay clickable).
+                    let resp = ui.interact(head, ui.id().with(("ws_file", &f.path)), Sense::click());
+                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, file));
+                    if resp.clicked() {
+                        open = if is_open { None } else { Some(f.path.clone()) };
+                    }
+                }
+                if files.is_empty() {
+                    ui.label(RichText::new("This folder is empty.").color(t.text_dim));
+                }
+            });
+            a.state.file_open = open;
+            if let Some((path, op)) = act {
+                match op {
+                    Some(op) => app.workspace_action(&path, op),
+                    None => {
+                        if let Some(a) = app.agent.as_mut() {
+                            let mention = format!("Use `{path}` ");
+                            if !a.state.input.contains(&mention) {
+                                if !a.state.input.is_empty() && !a.state.input.ends_with(' ') {
+                                    a.state.input.push(' ');
+                                }
+                                a.state.input.push_str(&mention);
+                            }
+                            a.state.tab = PaneTab::Chat;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(ws) = app.workspace.as_mut() {
+        if pick {
+            ws.host.pick();
+        }
+        if reconnect {
+            ws.host.reconnect();
+        }
+        if forget {
+            ws.host.forget();
+        }
+        if refresh {
+            ws.host.refresh();
+        }
+    }
+}
+
+fn primary_button(ui: &mut Ui, t: &Tokens, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new(label).font(theme::font(12.5)).color(t.accent_text)).fill(t.accent).min_size(vec2(96.0, 26.0)))
 }
 
 /// The agent's working style: standing instructions the person can edit, sent with every request.

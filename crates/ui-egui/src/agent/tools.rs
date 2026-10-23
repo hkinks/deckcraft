@@ -43,6 +43,7 @@ pub fn advertised() -> Vec<Value> {
         .into_iter()
         .filter(|t| t.get("name").and_then(Value::as_str).is_some_and(|n| ALLOWED_TOOLS.contains(&n)))
         .map(|t| json!({"name": t["name"], "description": t["description"], "inputSchema": t["inputSchema"]}))
+        .chain(super::workspace_tools::definitions())
         .collect()
 }
 
@@ -59,6 +60,10 @@ fn check_command(c: &Value) -> Result<(), String> {
 
 /// Whether the agent may make this call.
 pub fn check(name: &str, input: &Value) -> Result<(), String> {
+    // Workspace tools read the person's workspace by path (relative, listed; never the disk).
+    if super::workspace_tools::is_workspace_tool(name) {
+        return Ok(());
+    }
     if !ALLOWED_TOOLS.contains(&name) {
         return Err(format!("tool `{name}` is not allowed for the agent"));
     }

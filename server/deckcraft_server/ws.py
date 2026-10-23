@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .agent.loop import flatten_history, run_turn
+from .agent.files import file_part_to_text
 from .agent.prompt import DEFAULT_INSTRUCTIONS, MAX_INSTRUCTIONS, editor_context, system_prompt
 from .config import Settings
 from .providers.base import AssistantMsg, HistoryItem, UserMsg
@@ -125,7 +126,7 @@ class Connection:
             fut = self.pending.get(str(msg.get("id")))
             if fut and not fut.done():
                 content = msg.get("content") if isinstance(msg.get("content"), list) else []
-                parts = [p for p in content if isinstance(p, dict) and p.get("type") in ("text", "image")]
+                parts = [file_part_to_text(p) if p.get("type") == "file" else p for p in content if isinstance(p, dict) and p.get("type") in ("text", "image", "file")]
                 fut.set_result((bool(msg.get("ok")), parts))
         elif t == "stop":
             self.stop.set()
@@ -210,7 +211,7 @@ class Connection:
         status, result = "error", None
         try:
             result = await run_turn(
-                provider, system_prompt(await self.store.get_instructions(self.user.id), web=self.web_tools is not None), self.history, self.tools or [], self, self.settings.limits,
+                provider, system_prompt(await self.store.get_instructions(self.user.id), web=self.web_tools is not None, project=project_instructions(deck)), self.history, self.tools or [], self, self.settings.limits,
                 lambda d: self.send({"type": "assistant_delta", "text": d}), self.stop, server_tools=self.web_tools,
             )
             status = result.status
@@ -231,6 +232,12 @@ class Connection:
         await self.store.finish_turn(tid, actions, slides, status, usage)
         summary = (reply.splitlines() or [""])[0][:200]
         await self.send({"type": "turn_end", "turn_id": tid, "summary": summary, "actions": actions, "slides": slides, "usage": usage, "status": status})
+
+
+def project_instructions(deck: dict) -> str | None:
+    ws = deck.get("workspace")
+    text = ws.get("instructions") if isinstance(ws, dict) else None
+    return text if isinstance(text, str) else None
 
 
 def origin_ok(ws: WebSocket) -> bool:

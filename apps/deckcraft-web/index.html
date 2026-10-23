@@ -60,5 +60,79 @@
       };
     })();
   </script>
+  <script>
+    // The workspace folder (see crates/ui-egui/src/workspace.rs), through the File System Access
+    // API (Chromium). The folder's handle is kept in IndexedDB, so the next visit can offer to
+    // read it again (the browser asks the person first). Read-only.
+    window.deckcraftWorkspace = (() => {
+      const supported = typeof window.showDirectoryPicker === "function";
+      let handle = null;
+      const db = () => new Promise((res, rej) => {
+        const r = indexedDB.open("deckcraft-workspace", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("h");
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      const store = async h => {
+        const d = await db();
+        await new Promise((res, rej) => {
+          const t = d.transaction("h", "readwrite");
+          if (h) t.objectStore("h").put(h, "dir"); else t.objectStore("h").delete("dir");
+          t.oncomplete = res;
+          t.onerror = () => rej(t.error);
+        });
+      };
+      const stored = async () => {
+        const d = await db();
+        return new Promise((res, rej) => {
+          const q = d.transaction("h").objectStore("h").get("dir");
+          q.onsuccess = () => res(q.result || null);
+          q.onerror = () => rej(q.error);
+        });
+      };
+      // Hidden files and tool folders aren't materials.
+      const skip = name => name.startsWith(".") || name === "node_modules" || name === "__pycache__";
+      const MAX = 3000;
+      async function walk(dir, prefix, out) {
+        for await (const [name, h] of dir.entries()) {
+          if (out.length >= MAX) return;
+          if (skip(name)) continue;
+          if (h.kind === "directory") await walk(h, prefix + name + "/", out);
+          else out.push({ path: prefix + name, size: (await h.getFile()).size });
+        }
+      }
+      async function fileAt(path) {
+        const parts = path.split("/");
+        let dir = handle;
+        for (const seg of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(seg);
+        return (await dir.getFileHandle(parts[parts.length - 1])).getFile();
+      }
+      return {
+        supported,
+        pick: async () => {
+          handle = await window.showDirectoryPicker({ mode: "read", id: "deckcraft-workspace" });
+          await store(handle);
+          return handle.name;
+        },
+        // {name, granted} for the folder chosen on an earlier visit, or null.
+        remembered: async () => {
+          if (!supported) return null;
+          const h = await stored();
+          if (!h) return null;
+          handle = h;
+          return { name: h.name, granted: (await h.queryPermission({ mode: "read" })) === "granted" };
+        },
+        reconnect: async () => handle && (await handle.requestPermission({ mode: "read" })) === "granted",
+        forget: async () => { handle = null; await store(null); },
+        list: async () => {
+          const out = [];
+          await walk(handle, "", out);
+          out.sort((a, b) => a.path.localeCompare(b.path));
+          return out;
+        },
+        read: async path => new Uint8Array(await (await fileAt(path)).arrayBuffer()),
+      };
+    })();
+  </script>
 </body>
 </html>

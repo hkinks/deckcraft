@@ -26,6 +26,8 @@ mod fonts_web;
 mod recovery_idb;
 #[cfg(target_arch = "wasm32")]
 mod web;
+#[cfg(target_arch = "wasm32")]
+mod workspace_web;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

@@ -500,3 +500,106 @@ fn web_steps_the_server_ran_show_in_the_step_list() {
     );
     assert!(wire.sent_of("tool_result").is_empty(), "nothing to answer");
 }
+
+fn with_workspace(app: &mut SlideApp, files: &[(&str, &[u8])]) -> crate::workspace_fake::FakeHost {
+    let host = crate::workspace_fake::FakeHost::with(files);
+    app.set_workspace_host(Box::new(host.clone()));
+    host
+}
+
+fn result_text(r: &Value) -> String {
+    r["content"].as_array().unwrap().iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn the_agent_reads_a_workspace_file_once_it_arrives() {
+    let (mut app, ctx, wire) = setup();
+    let host = with_workspace(&mut app, &[("brief.md", b"# Launch\nShip in March."), ("img/logo.png", b"png")]);
+    client::send_prompt(&mut app, "use the brief");
+    let sent = wire.sent_of("user_message");
+    assert_eq!(sent[0]["deck"]["workspace"]["name"], "Launch");
+    assert_eq!(sent[0]["deck"]["workspace"]["file_count"], 2);
+    wire.push(ServerMsg::ToolCall { id: "r1".into(), name: "read_workspace_file".into(), input: json!({"path": "brief.md"}) });
+    client::tick(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    assert!(wire.sent_of("tool_result").is_empty(), "waits for the file");
+    assert_eq!(host.0.borrow().asked, vec!["brief.md".to_string()]);
+    host.0.borrow_mut().instant = true;
+    for _ in 0..4 {
+        app.workspace_tick();
+        client::tick(&mut app, &ctx);
+    }
+    let r = wire.sent_of("tool_result");
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0]["ok"], true);
+    assert!(result_text(&r[0]).contains("Ship in March."), "{}", result_text(&r[0]));
+}
+
+#[test]
+fn listing_and_unknown_paths() {
+    let (mut app, ctx, wire) = setup();
+    with_workspace(&mut app, &[("brief.md", b"x"), ("data/q3.csv", b"a,b")]);
+    client::send_prompt(&mut app, "look");
+    wire.push(ServerMsg::ToolCall { id: "l1".into(), name: "list_workspace_files".into(), input: json!({"filter": "csv"}) });
+    wire.push(ServerMsg::ToolCall { id: "r1".into(), name: "read_workspace_file".into(), input: json!({"path": "../etc/passwd"}) });
+    client::tick(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    let r = wire.sent_of("tool_result");
+    assert!(result_text(&r[0]).contains("data/q3.csv") && !result_text(&r[0]).contains("brief.md"), "{}", result_text(&r[0]));
+    assert_eq!(r[1]["ok"], false);
+    assert!(result_text(&r[1]).contains("no file"), "{}", result_text(&r[1]));
+}
+
+#[test]
+fn inserting_a_workspace_picture_is_one_labelled_agent_step() {
+    let png = deckcraft_engine::cmd::base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==").unwrap();
+    let (mut app, ctx, wire) = setup();
+    let host = with_workspace(&mut app, &[("img/logo.png", &png)]);
+    host.0.borrow_mut().instant = true;
+    let shapes = doc(&app).slides[app.session.active().unwrap().selection.slide].shapes.len();
+    client::send_prompt(&mut app, "add the logo");
+    wire.push(ServerMsg::ToolCall { id: "i1".into(), name: "insert_workspace_image".into(), input: json!({"path": "img/logo.png", "x": 20, "y": 20, "w": 80, "h": 80}) });
+    for _ in 0..4 {
+        app.workspace_tick();
+        client::tick(&mut app, &ctx);
+    }
+    let r = wire.sent_of("tool_result");
+    assert_eq!(r[0]["ok"], true, "{}", result_text(&r[0]));
+    let a = app.session.active().unwrap();
+    assert_eq!(a.doc.slides[a.selection.slide].shapes.len(), shapes + 1);
+    assert!(a.history.undo.last().unwrap().label.starts_with("AI: "));
+}
+
+#[test]
+fn without_a_workspace_the_agent_is_told_how_to_get_one() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "use my files");
+    assert!(wire.sent_of("user_message")[0]["deck"].get("workspace").is_none());
+    wire.push(ServerMsg::ToolCall { id: "l1".into(), name: "list_workspace_files".into(), input: json!({}) });
+    client::tick(&mut app, &ctx);
+    let r = wire.sent_of("tool_result");
+    assert_eq!(r[0]["ok"], false);
+    assert!(result_text(&r[0]).contains("Files tab"));
+}
+
+#[test]
+fn a_workspace_picture_keeps_its_proportions_in_any_box() {
+    // A square picture asked into a tall box sits in it at its own aspect, centred.
+    let png = deckcraft_engine::cmd::base64_decode("iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAA5ElEQVR4nO3awRHDMAhEUd9dhDtIAenV5bmPNJBIgEBLYGf2rv/O6Div91/vgBcQgC4gAF2QDvB67sGSAsbRoZhVgC3dkWEHrKe7MCwA3/RFhhoQV28z6ADR9QaDArCnXmuQAnbWqwwiwP56uWEOQNULDRMAtl5iKA2Ap0sMdQHwaKGhKACeKzcQQIA/AB6qMhBAAAEEEEBANUBaw9dUAggIASQ0/OqsC0hlGESWBiQxjAurA+CGaV6DAwfKIAxrc+TbaVAlNTt0RxsMMS0/e/gyFgPaf3jSYtyf46c/9AhAjwD0PjgyCMAt+MQSAAAAAElFTkSuQmCC").unwrap();
+    let (mut app, ctx, wire) = setup();
+    let host = with_workspace(&mut app, &[("img/logo.png", &png)]);
+    host.0.borrow_mut().instant = true;
+    client::send_prompt(&mut app, "logo");
+    wire.push(ServerMsg::ToolCall { id: "i1".into(), name: "insert_workspace_image".into(), input: json!({"path": "img/logo.png", "x": 100, "y": 50, "w": 80, "h": 200}) });
+    wire.push(ServerMsg::ToolCall { id: "i2".into(), name: "insert_workspace_image".into(), input: json!({"path": "img/logo.png", "x": 300, "y": 50, "w": 120}) });
+    for _ in 0..6 {
+        app.workspace_tick();
+        client::tick(&mut app, &ctx);
+    }
+    let r = wire.sent_of("tool_result");
+    assert!(r.iter().all(|x| x["ok"] == true), "{r:?}");
+    let a = app.session.active().unwrap();
+    let pics: Vec<_> = a.doc.slides[a.selection.slide].shapes.iter().rev().take(2).map(|s| { let x = s.xfrm.unwrap(); (x.x, x.y, x.w, x.h) }).collect();
+    assert_eq!(pics[1], (100.0, 110.0, 80.0, 80.0), "fitted in the 80 × 200 box, centred");
+    assert_eq!(pics[0], (300.0, 50.0, 120.0, 120.0), "height follows the width");
+}

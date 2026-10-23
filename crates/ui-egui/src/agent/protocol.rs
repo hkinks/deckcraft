@@ -14,6 +14,8 @@ pub const MAX_FRAME: usize = 16 << 20;
 pub enum ContentPart {
     Text { text: String },
     Image { media_type: String, data: String },
+    /// A document the server turns into text for the model (a workspace PDF).
+    File { name: String, media_type: String, data: String },
 }
 
 /// What the agent is told about the editor with each request.
@@ -24,6 +26,21 @@ pub struct DeckContext {
     pub current: usize,
     pub selection: Vec<u32>,
     pub slide_size: [f64; 2],
+    /// The person's workspace folder, when one is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceContext>,
+}
+
+/// The workspace as the agent is told about it with each request.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceContext {
+    pub name: String,
+    pub file_count: usize,
+    /// The first paths (the rest via list_workspace_files).
+    pub files: Vec<String>,
+    /// `AGENT.md` at the folder's root: the person's instructions for this project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

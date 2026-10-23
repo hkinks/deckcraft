@@ -44,11 +44,23 @@ WEB = """\
 """
 
 
-def system_prompt(instructions: str | None, web: bool = False) -> str:
-    """The fixed rules plus the user's working style (or the default one)."""
+WORKSPACE = """\
+- The user may have a workspace folder open with their materials (briefs, notes, data, pictures,
+  draft decks, style templates). When it's relevant, look there first (list_workspace_files,
+  read_workspace_file) and prefer its facts over inventing or searching; use
+  apply_workspace_template for its templates and insert_workspace_image for its pictures.
+"""
+
+
+def system_prompt(instructions: str | None, web: bool = False, project: str | None = None) -> str:
+    """The fixed rules plus the user's working style (or the default one), and the workspace's
+    project instructions (its AGENT.md) when it has some."""
     style = (instructions or "").strip() or DEFAULT_INSTRUCTIONS
-    rules = SYSTEM_PROMPT + (WEB if web else "")
-    return f"{rules}\nWorking style (set by the user; follow it):\n{style.rstrip()}\n"
+    rules = SYSTEM_PROMPT + WORKSPACE + (WEB if web else "")
+    out = f"{rules}\nWorking style (set by the user; follow it):\n{style.rstrip()}\n"
+    if project and project.strip():
+        out += f"\nProject instructions (the workspace's AGENT.md, written by the user; follow them):\n{project.strip()[:20000]}\n"
+    return out
 
 
 def editor_context(deck: dict) -> str:
@@ -62,4 +74,11 @@ def editor_context(deck: dict) -> str:
     size = deck.get("slide_size")
     if isinstance(size, list) and len(size) == 2:
         parts.append(f"slide size {size[0]} x {size[1]} pt")
-    return f"[Editor state: {', '.join(parts)}]" if parts else ""
+    out = f"[Editor state: {', '.join(parts)}]" if parts else ""
+    ws = deck.get("workspace")
+    if isinstance(ws, dict) and isinstance(ws.get("name"), str):
+        files = [f for f in ws.get("files", []) if isinstance(f, str)][:150]
+        count = ws.get("file_count") if isinstance(ws.get("file_count"), int) else len(files)
+        more = f" (and {count - len(files)} more)" if count > len(files) else ""
+        out += f"\n[Workspace folder “{ws['name'][:100]}”: {count} files{more}: {', '.join(files)}]"
+    return out

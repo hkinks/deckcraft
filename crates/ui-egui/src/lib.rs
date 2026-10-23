@@ -39,6 +39,7 @@ pub mod toast;
 pub mod uifonts;
 pub mod webfonts;
 pub mod widgets;
+pub mod workspace;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
@@ -450,6 +451,8 @@ pub struct SlideApp {
     pub autosave: Option<autosave::Autosave>,
     /// Fonts on demand from the agent server's catalog (web).
     pub webfonts: Option<webfonts::WebFonts>,
+    /// The person's workspace folder (materials for them and the agent).
+    pub workspace: Option<workspace::Workspace>,
     /// Spelling squiggles, checked on a worker thread.
     pub squiggles: squiggles::Squiggles,
     pub dialog: Option<dialogs::Dialog>,
@@ -552,6 +555,7 @@ impl SlideApp {
             agent: None,
             autosave: None,
             webfonts: None,
+            workspace: None,
             squiggles: Default::default(),
             dialog: None,
             thesaurus_query: String::new(),
@@ -1832,6 +1836,7 @@ impl SlideApp {
         agent::client::tick(self, &ctx);
         self.autosave_tick();
         self.fonts_tick();
+        self.workspace_tick();
         self.tick_media(&ctx);
         eyedropper::tick(self, &ctx);
         self.opening_ui(&ctx);
@@ -2085,6 +2090,10 @@ mod animpane_tests;
 mod autosave_tests;
 #[cfg(test)]
 mod webfonts_tests;
+#[cfg(test)]
+mod workspace_tests;
+#[cfg(test)]
+pub(crate) mod workspace_fake;
 #[cfg(test)]
 mod browsetheme_tests;
 #[cfg(test)]

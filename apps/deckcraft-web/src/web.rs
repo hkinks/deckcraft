@@ -52,6 +52,9 @@ pub fn start() {
                     let agent = crate::agent_ws::WebAgentTransport::new(cc.egui_ctx.clone());
                     app.set_agent_transport(Box::new(agent.clone()));
                     app.set_recovery_store(Box::new(crate::recovery_idb::IdbStore::new(cc.egui_ctx.clone())));
+                    if let Some(ws) = crate::workspace_web::WebWorkspace::new(cc.egui_ctx.clone()) {
+                        app.set_workspace_host(Box::new(ws));
+                    }
                     let unsaved = warn_before_leaving();
                     let fonts = std::rc::Rc::default();
                     crate::fonts_web::load_catalog(cc.egui_ctx.clone(), std::rc::Rc::clone(&fonts));

@@ -92,6 +92,7 @@ pub enum PaneTab {
     #[default]
     Chat,
     Changes,
+    Files,
     Instructions,
 }
 
@@ -111,6 +112,9 @@ pub struct AgentState {
     pub default_instructions: String,
     /// The Instructions tab's unsaved edit.
     pub instructions_draft: Option<String>,
+    /// The Files tab's filter and the file whose actions are showing.
+    pub file_filter: String,
+    pub file_open: Option<String>,
     /// Requests typed while the agent was busy, sent one after another: (document uid, text).
     queue: VecDeque<(u64, String)>,
     /// A turn ended without finishing (stopped, error, limit): the queue waits for the person.
@@ -128,6 +132,8 @@ pub struct AgentState {
     snapshots: HashMap<String, Snapshot>,
     /// Tool calls (and a turn end that arrived behind them), run one per frame in order.
     pending: VecDeque<Pending>,
+    /// A workspace file the next tool call waits for.
+    waiting_file: Option<String>,
     deck_keys: HashMap<u64, String>,
     /// The document the open conversation belongs to.
     conversation_uid: Option<u64>,
@@ -149,7 +155,10 @@ impl Default for AgentState {
             instructions: String::new(),
             default_instructions: String::new(),
             instructions_draft: None,
+            file_filter: String::new(),
+            file_open: None,
             queue: VecDeque::new(),
+            waiting_file: None,
             queue_paused: false,
             login_user: String::new(),
             login_password: String::new(),
@@ -266,7 +275,20 @@ fn deck_context(app: &SlideApp, key: String) -> DeckContext {
         current: d.selection.slide,
         selection: d.selection.shapes.iter().map(|s| s.0).collect(),
         slide_size: [d.doc.slide_size.width, d.doc.slide_size.height],
+        workspace: workspace_context(app),
     }
+}
+
+fn workspace_context(app: &SlideApp) -> Option<super::protocol::WorkspaceContext> {
+    let ws = app.workspace.as_ref()?;
+    let name = ws.folder_name()?;
+    let files = ws.host.files();
+    Some(super::protocol::WorkspaceContext {
+        name,
+        file_count: files.len(),
+        files: files.iter().take(150).map(|f| f.path.clone()).collect(),
+        instructions: ws.instructions.clone(),
+    })
 }
 
 /// Close the running turn and record its card. Every step stays its own undo step.
@@ -277,6 +299,12 @@ fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, ac
         return;
     };
     client.state.pending.clear();
+    client.state.waiting_file = None;
+    // Files the agent read go with the turn; ones the person is waiting on stay.
+    if let Some(ws) = app.workspace.as_mut() {
+        let keep: std::collections::HashSet<String> = ws.user_ops.iter().map(|(p, _)| p.clone()).collect();
+        ws.cache.retain(|p, _| keep.contains(p));
+    }
     if !matches!(status.as_str(), "ok" | "") {
         client.state.queue_paused = true;
     }
@@ -344,6 +372,15 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
         return;
     };
     let uid = *uid;
+    // A workspace tool whose file isn't read yet waits for it (and runs again when it's in).
+    if let super::workspace_tools::Need::File(path) = super::workspace_tools::needs(app, &name, &input) {
+        if let Some(ws) = app.workspace.as_mut() {
+            ws.want(&path);
+        }
+        client.state.waiting_file = Some(path);
+        client.state.pending.push_front(Pending::Tool { id, name, input });
+        return;
+    }
     let (ok, mut content, note) = if app.session.active().map(|d| d.uid) != Some(uid) {
         (false, vec![ContentPart::Text { text: "the deck this turn was editing is no longer the active document".into() }], None)
     } else {
@@ -363,7 +400,11 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
             d.put_selection(agent_view.0, agent_view.1);
             mine
         });
-        let (ok, content) = tools::execute_on(app, ctx, Some(uid), &name, &input, client.vision());
+        let (ok, content) = if super::workspace_tools::is_workspace_tool(&name) {
+            super::workspace_tools::run(app, ctx, Some(uid), &name, &input, client.vision())
+        } else {
+            tools::execute_on(app, ctx, Some(uid), &name, &input, client.vision())
+        };
         if let Some((sel, on)) = mine
             && let Some(d) = app.session.active_mut()
             && d.uid == uid
@@ -393,6 +434,7 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
         .iter()
         .find_map(|c| match c {
             ContentPart::Text { text } => Some(text.chars().take(160).collect::<String>()),
+            ContentPart::File { name, .. } => Some(name.clone()),
             ContentPart::Image { .. } => None,
         })
         .unwrap_or_default();
@@ -561,7 +603,17 @@ pub fn tick(app: &mut SlideApp, ctx: &egui::Context) {
     {
         open_conversation(app, &mut client);
     }
-    match client.state.pending.pop_front() {
+    if let Some(path) = &client.state.waiting_file {
+        let ws = app.workspace.as_ref();
+        let arrived = ws.is_none_or(|w| w.cache.contains_key(path) || !w.reading.contains(path));
+        if arrived {
+            client.state.waiting_file = None;
+        } else {
+            client.state.last_heard = crate::now_ms();
+        }
+    }
+    let next = if client.state.waiting_file.is_some() { None } else { client.state.pending.pop_front() };
+    match next {
         Some(Pending::Tool { id, name, input }) => run_tool(app, ctx, &mut client, id, name, input),
         Some(Pending::End { turn_id, actions, status }) => finish_turn(app, &mut client, turn_id, actions, status),
         None => {}
