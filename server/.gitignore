@@ -1,0 +1,6 @@
+.venv/
+data/
+.dev-password
+.env
+config.toml
+__pycache__/
