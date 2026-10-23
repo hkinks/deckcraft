@@ -448,3 +448,19 @@ fn a_request_cut_off_by_a_limit_can_be_continued() {
     assert_eq!(sent.len(), 2);
     assert!(sent[1]["text"].as_str().unwrap().to_lowercase().contains("continue"));
 }
+
+#[test]
+fn text_and_enter_in_one_frame_send_the_text() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    let id = egui::Id::new("agent_prompt");
+    h.ctx.memory_mut(|m| m.request_focus(id));
+    h.run_steps(1);
+    // A paste and Enter arriving together (fast typists, pastes, automation).
+    h.event(egui::Event::Text("make it pop".into()));
+    h.event(egui::Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+    let sent = wire.sent_of("user_message");
+    assert_eq!(sent.len(), 1, "sent, not a new line");
+    assert_eq!(sent[0]["text"], "make it pop");
+    assert!(h.state().agent.as_ref().unwrap().state.input.is_empty());
+}
