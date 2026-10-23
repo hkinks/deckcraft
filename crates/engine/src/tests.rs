@@ -4072,3 +4072,38 @@ fn a_shape_in_front_of_edited_text_takes_the_click() {
     let st = s.doc().unwrap();
     assert!(st.selection.text.as_ref().is_none_or(|t| t.shape.0 as u64 != tb), "the click on the member in front left the text: {:?}", st.selection);
 }
+
+#[test]
+fn squash_undo_since_merges_a_turn_into_one_step() {
+    let mut s = session();
+    let uid = s.active().unwrap().uid;
+    let before = s.active().unwrap().doc.clone();
+    s.execute("slide.new", &json!({"layout": "title"})).unwrap();
+    s.execute("slide.new", &json!({"layout": "title"})).unwrap();
+    s.execute("shape.insert", &json!({"preset": "rect", "rect": [10, 10, 100, 50]})).unwrap();
+    let undo_before = s.active().unwrap().history.undo.len();
+    assert!(undo_before >= 3);
+    assert!(s.squash_undo_since(uid, &before, "AI: test"));
+    let h = &s.active().unwrap().history;
+    assert_eq!(h.undo.last().unwrap().label, "AI: test");
+    assert_eq!(h.undo.len(), undo_before - 2);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(Arc::ptr_eq(&s.active().unwrap().doc, &before));
+}
+
+#[test]
+fn squash_undo_since_without_changes_is_false() {
+    let mut s = session();
+    let uid = s.active().unwrap().uid;
+    let before = s.active().unwrap().doc.clone();
+    assert!(!s.squash_undo_since(uid, &before, "AI: nothing"));
+}
+
+#[test]
+fn squash_undo_since_unknown_document_is_false() {
+    let mut s = session();
+    let before = s.active().unwrap().doc.clone();
+    s.execute("slide.new", &json!({})).unwrap();
+    assert!(!s.squash_undo_since(u64::MAX, &before, "x"));
+    assert_ne!(s.active().unwrap().history.undo.last().unwrap().label, "x");
+}

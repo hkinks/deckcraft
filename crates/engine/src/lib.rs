@@ -546,6 +546,23 @@ impl Session {
     pub fn active_mut(&mut self) -> Option<&mut DocState> {
         self.active.and_then(|i| self.docs.get_mut(i))
     }
+    /// Merge every undo step made in document `uid` since its presentation was `before` into one
+    /// step labelled `label` (an agent turn becomes a single Undo). The step is found by the
+    /// snapshot itself, so it still works after older steps were dropped for the undo budget.
+    /// False when the document is gone, nothing changed, or `before` is no longer in its history.
+    pub fn squash_undo_since(&mut self, uid: u64, before: &Arc<Presentation>, label: &str) -> bool {
+        let Some(st) = self.docs.iter_mut().find(|d| d.uid == uid) else { return false };
+        if Arc::ptr_eq(&st.doc, before) {
+            return false;
+        }
+        let Some(i) = st.history.undo.iter().rposition(|e| Arc::ptr_eq(&e.doc, before)) else { return false };
+        st.history.undo.truncate(i + 1);
+        if let Some(e) = st.history.undo.get_mut(i) {
+            e.label = label.to_string();
+        }
+        st.history.redo.clear();
+        true
+    }
     pub fn doc(&self) -> Result<&DocState> {
         self.active().ok_or(EngineError::NoDocument)
     }
