@@ -461,3 +461,26 @@ fn revert_confirmation_names_what_else_would_be_lost() {
     assert_eq!(client::later_changes(&app, 0).unwrap().describe(), "2 edits you made and 1 later agent request");
     assert_eq!(client::later_changes(&app, 1), Some(client::LaterChanges { your_edits: 0, requests: 0 }));
 }
+
+#[test]
+fn switching_to_another_deck_stops_the_turn_and_follows_the_switch() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "edit");
+    wire.push(call("t1", "slide.new", json!({})));
+    client::tick(&mut app, &ctx);
+    app.run("file.new", json!({})).unwrap();
+    client::tick(&mut app, &ctx);
+    assert_eq!(wire.sent_of("stop").len(), 1, "the turn is stopped as soon as the deck changes");
+    let items = &app.agent.as_ref().unwrap().state.items;
+    assert!(
+        items.iter().any(|i| matches!(i, client::ChatItem::Notice(n) if n.contains("switched"))),
+        "the chat says why"
+    );
+    client::tick(&mut app, &ctx);
+    assert_eq!(wire.sent_of("stop").len(), 1, "stop is sent once");
+    wire.push(ServerMsg::TurnEnd { turn_id: "turn-1".into(), summary: String::new(), actions: vec![], slides: vec![], status: "stopped".into() });
+    run_until_idle(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    assert_eq!(wire.sent_of("open_conversation").len(), 2, "the pane moves to the new deck's conversation");
+    assert_eq!(app.agent.as_ref().unwrap().state.turns[0].status, "stopped");
+}

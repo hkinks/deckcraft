@@ -513,6 +513,22 @@ pub fn tick(app: &mut SlideApp, ctx: &egui::Context) {
             finish_turn(app, &mut client, String::new(), vec![], "interrupted".into());
         }
     }
+    // The person opened or switched to another deck mid-turn: the agent stops (its steps so far
+    // stay in the deck it was editing, each its own undo step) and the pane follows them.
+    if let TurnState::Running { uid, stopping: stopping @ false, .. } = &mut client.state.turn
+        && app.session.active().map(|d| d.uid) != Some(*uid)
+    {
+        *stopping = true;
+        client.state.stop_at = Some(crate::now_ms());
+        client.transport.send(&ClientMsg::Stop { v: VERSION });
+        let title = app.session.documents().iter().find(|d| d.uid == *uid).map(|d| d.title.clone()).unwrap_or_default();
+        let note = if title.is_empty() {
+            "Stopped: you switched to another presentation. What the agent did so far stays in the one it was editing.".to_string()
+        } else {
+            format!("Stopped: you switched to another presentation. What the agent did so far stays in “{title}”.")
+        };
+        client.state.items.push(ChatItem::Notice(note));
+    }
     // Another deck became active: show its conversation (not while a turn runs).
     if client.state.ready
         && matches!(client.state.turn, TurnState::Idle)
