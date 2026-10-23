@@ -243,3 +243,9 @@ session.
 - Desktop build: a native `AgentTransport` implementation (tungstenite) — the pane, state and
   executor are shared.
 - Server-side deck snapshots per turn, so history and revert survive reloads.
+- Shared decks, step 1: decks stored on the backend with an edit lock (one editor at a time,
+  others read-only or take over), reusing auth and storage.
+- Shared decks, step 2 (real-time co-editing): the server holds the authoritative deck in a
+  headless engine; browsers send commands and receive updates. Out of v1 because the deck lives in
+  one tab, the engine's undo is snapshot-based (no operation stream to sync), and concurrent edits
+  need conflict resolution and a shared undo model.
