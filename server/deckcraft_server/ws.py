@@ -43,8 +43,9 @@ class Connection:
     # so it runs nothing until it is shown again (bounded by the turn's time limit).
     manages_timeout = True
 
-    def __init__(self, ws: WebSocket, user: User, settings: Settings, store: Store, providers: dict, limiter: RateLimiter):
+    def __init__(self, ws: WebSocket, user: User, settings: Settings, store: Store, providers: dict, limiter: RateLimiter, web_tools=None):
         self.ws = ws
+        self.web_tools = web_tools
         self.user = user
         self.settings = settings
         self.store = store
@@ -95,6 +96,11 @@ class Connection:
                         raise
         finally:
             self.pending.pop(id, None)
+
+    async def server_activity(self, name: str, input: dict, ok: bool, parts: list[dict]) -> None:
+        """A step the server ran itself (web search, fetch), for the pane's step list."""
+        what = input.get("query") or input.get("url") or ""
+        await self.send({"type": "activity", "name": name, "ok": ok, "summary": str(what)[:160]})
 
     async def handle(self, msg: dict) -> None:
         t = msg.get("type")
@@ -204,8 +210,8 @@ class Connection:
         status, result = "error", None
         try:
             result = await run_turn(
-                provider, system_prompt(await self.store.get_instructions(self.user.id)), self.history, self.tools or [], self, self.settings.limits,
-                lambda d: self.send({"type": "assistant_delta", "text": d}), self.stop,
+                provider, system_prompt(await self.store.get_instructions(self.user.id), web=self.web_tools is not None), self.history, self.tools or [], self, self.settings.limits,
+                lambda d: self.send({"type": "assistant_delta", "text": d}), self.stop, server_tools=self.web_tools,
             )
             status = result.status
             if result.status == "error":
@@ -234,7 +240,7 @@ def origin_ok(ws: WebSocket) -> bool:
     return urlparse(origin).netloc == ws.headers.get("host", "")
 
 
-async def agent_socket(ws: WebSocket, auth, settings: Settings, store: Store, providers: dict, limiter: RateLimiter) -> None:
+async def agent_socket(ws: WebSocket, auth, settings: Settings, store: Store, providers: dict, limiter: RateLimiter, web_tools=None) -> None:
     user = await auth.websocket_user(ws)
     if user is None:
         await ws.close(code=4401)
@@ -243,7 +249,7 @@ async def agent_socket(ws: WebSocket, auth, settings: Settings, store: Store, pr
         await ws.close(code=4403)
         return
     await ws.accept()
-    conn = Connection(ws, user, settings, store, providers, limiter)
+    conn = Connection(ws, user, settings, store, providers, limiter, web_tools)
     try:
         while True:
             raw = await ws.receive_text()

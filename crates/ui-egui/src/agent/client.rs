@@ -410,6 +410,15 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
 
 fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
     match m {
+        ServerMsg::Activity { name, ok, summary } => {
+            let name = match name.as_str() {
+                "web_search" => "Web search".to_string(),
+                "web_fetch" => "Read web page".to_string(),
+                _ => name,
+            };
+            client.state.items.push(ChatItem::Tool { name, ok, summary });
+            client.state.last_heard = crate::now_ms();
+        }
         ServerMsg::Instructions { text } => {
             client.state.instructions = text;
             client.state.instructions_draft = None;

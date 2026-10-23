@@ -20,6 +20,14 @@ class BrowserLink(Protocol):
     async def call_tool(self, id: str, name: str, input: dict) -> tuple[bool, list[dict]]: ...
 
 
+class ServerTools(Protocol):
+    """Tools the server runs itself (web search and fetch), next to the browser's."""
+
+    def definitions(self) -> list[dict]: ...
+
+    async def call(self, name: str, input: dict) -> tuple[bool, list[dict]]: ...
+
+
 @dataclass
 class TurnResult:
     status: str  # ok | stopped | limit | error
@@ -31,7 +39,7 @@ class TurnResult:
 
 
 # Tools that only look at the deck (or move the view); not counted as changes.
-READ_ONLY = {"list_commands", "inspect_document", "inspect_slide", "render_slide", "get_deck_json", "go_to_slide", "select"}
+READ_ONLY = {"list_commands", "inspect_document", "inspect_slide", "render_slide", "get_deck_json", "go_to_slide", "select", "web_search", "web_fetch"}
 
 
 # Shortcut tools, logged as the editor command they run (so the pane shows its menu label).
@@ -110,7 +118,10 @@ async def run_turn(
     limits: Limits,
     on_delta: Callable[[str], Awaitable[None]],
     stop: asyncio.Event,
+    server_tools: ServerTools | None = None,
 ) -> TurnResult:
+    on_server = {d["name"] for d in server_tools.definitions()} if server_tools else set()
+    tools = [t for t in tools if t["name"] not in on_server] + (server_tools.definitions() if server_tools else [])
     names = {t["name"] for t in tools}
     result = TurnResult(status="ok")
     slides: set[int] = set()
@@ -192,6 +203,16 @@ async def run_turn(
                 results.results.append(_err(tu.id, "tool input was not valid JSON; send a JSON object matching the tool's schema"))
                 continue
             calls += 1
+            if server_tools and tu.name in on_server:
+                try:
+                    ok, parts = await asyncio.wait_for(server_tools.call(tu.name, tu.input), limits.tool_call_timeout_seconds)
+                except asyncio.TimeoutError:
+                    ok, parts = False, [{"type": "text", "text": f"{tu.name} timed out"}]
+                results.results.append(ToolResult(tu.id, ok, parts))
+                # The pane lists these steps too, though the browser doesn't run them.
+                if report := getattr(browser, "server_activity", None):
+                    await report(tu.name, tu.input, ok, parts)
+                continue
             # A browser link that knows when its tab is hidden applies the tool timeout itself.
             timeout = None if getattr(browser, "manages_timeout", False) else limits.tool_call_timeout_seconds
             try:

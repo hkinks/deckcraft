@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .agent.web import WebCfg
+
 _REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -42,6 +44,7 @@ class Settings(BaseModel):
     default_provider: str
     providers: dict[str, ProviderCfg]
     limits: Limits = Field(default_factory=Limits)
+    web: WebCfg = Field(default_factory=WebCfg)
     site_dir: Path | None = None
     db_path: Path = Path("data/deckcraft.db")
     session_secret: str = ""

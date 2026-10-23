@@ -35,3 +35,11 @@ turns_per_minute = 6
 max_tool_calls_per_turn = 60
 max_turn_seconds = 300
 tool_call_timeout_seconds = 30
+
+# The agent's web search and page fetching (run on this server). DuckDuckGo needs no key;
+# "searxng" uses base_url (a self-hosted SearXNG with JSON output on), "brave" and "tavily" an api_key.
+[web]
+enabled = true
+search = "duckduckgo"
+# base_url = "http://localhost:8888"
+# api_key = "${SEARCH_API_KEY}"

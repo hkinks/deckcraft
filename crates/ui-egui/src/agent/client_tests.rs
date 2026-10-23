@@ -486,3 +486,17 @@ fn switching_to_another_deck_stops_the_turn_and_follows_the_switch() {
     assert_eq!(wire.sent_of("open_conversation").len(), 2, "the pane moves to the new deck's conversation");
     assert_eq!(app.agent.as_ref().unwrap().state.turns[0].status, "stopped");
 }
+
+#[test]
+fn web_steps_the_server_ran_show_in_the_step_list() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "find facts");
+    wire.push(ServerMsg::Activity { name: "web_search".into(), ok: true, summary: "aurora facts".into() });
+    client::tick(&mut app, &ctx);
+    let items = &app.agent.as_ref().unwrap().state.items;
+    assert!(
+        items.iter().any(|i| matches!(i, client::ChatItem::Tool { name, ok: true, summary } if name == "Web search" && summary == "aurora facts")),
+        "{items:?}"
+    );
+    assert!(wire.sent_of("tool_result").is_empty(), "nothing to answer");
+}

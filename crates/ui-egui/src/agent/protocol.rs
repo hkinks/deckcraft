@@ -94,6 +94,14 @@ pub enum ServerMsg {
     },
     /// The working style as saved.
     Instructions { text: String },
+    /// A step the server ran itself (web search, fetch), for the step list.
+    Activity {
+        name: String,
+        #[serde(default)]
+        ok: bool,
+        #[serde(default)]
+        summary: String,
+    },
     History {
         #[serde(default)]
         conversation_id: Option<String>,

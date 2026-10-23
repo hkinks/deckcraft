@@ -319,3 +319,47 @@ def test_overlong_instructions_are_refused(env):
         ws.send_json({"v": 1, "type": "set_instructions", "text": "x" * 20001})
         m = ws.receive_json()
     assert m["type"] == "error" and m["code"] == "too_long"
+
+
+class FakeWeb:
+    def definitions(self):
+        return [{"name": "web_search", "description": "Search the web", "inputSchema": {"type": "object"}}]
+
+    async def call(self, name, input):
+        return True, [{"type": "text", "text": "1. Aurora facts\n   https://example.org/aurora\n   Lights in the sky."}]
+
+
+def test_web_search_runs_on_the_server_and_the_pane_hears_about_it(tmp_path):
+    store = Store(tmp_path / "w.db")
+    asyncio.run(store.init())
+    asyncio.run(store.add_user("ana", hash_password("pw")))
+    settings = Settings.model_validate({
+        "default_provider": "fake",
+        "providers": {"fake": {"kind": "openai_compat", "base_url": "http://unused/v1", "model": "fake-model"}},
+        "session_secret": "x",
+    })
+    script = [("", [ToolUse("w1", "web_search", {"query": "aurora facts"})]), ("Done.", [])]
+    SYSTEMS.clear()
+    client = TestClient(create_app(settings, store, provider_factory=lambda cfg: Scripted(script), web_tools=FakeWeb()))
+    login(client)
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "open_conversation", "deck_key": "deck#1"})
+        ws.receive_json()
+        ws.send_json({"v": 1, "type": "user_message", "text": "find facts", "deck": {"deck_key": "deck#1"}})
+        got = []
+        while (m := ws.receive_json())["type"] != "turn_end":
+            got.append(m)
+            assert m["type"] != "tool_call", "the browser isn't asked to search"
+    act = [m for m in got if m["type"] == "activity"]
+    assert act == [{"type": "activity", "name": "web_search", "ok": True, "summary": "aurora facts"}]
+    assert "web_search" in SYSTEMS[-1]
+
+
+def test_web_tools_can_be_switched_off(env):
+    settings = Settings.model_validate({
+        "default_provider": "fake",
+        "providers": {"fake": {"kind": "openai_compat", "base_url": "http://unused/v1", "model": "m"}},
+        "web": {"enabled": False},
+    })
+    assert settings.web.enabled is False

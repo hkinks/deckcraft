@@ -207,3 +207,47 @@ def test_shortcut_tools_are_logged_as_their_editor_commands():
     assert describe("insert_table", {}) == ["insert.table"]
     assert describe("insert_chart", {}) == ["insert.chart"]
     assert describe("patch_deck_json", {}) == ["doc.patch"]
+
+
+class FakeServerTools:
+    def __init__(self):
+        self.calls = []
+
+    def definitions(self):
+        return [{"name": "web_search", "description": "", "inputSchema": {"type": "object"}}]
+
+    async def call(self, name, input):
+        self.calls.append((name, input))
+        return True, [{"type": "text", "text": "1. Aurora facts\n   https://example.org"}]
+
+
+class ReportingBrowser(FakeBrowser):
+    def __init__(self):
+        super().__init__()
+        self.activity = []
+
+    async def server_activity(self, name, input, ok, parts):
+        self.activity.append((name, input, ok))
+
+
+async def test_web_tools_run_on_the_server_and_are_reported_to_the_browser():
+    tu = ToolUse("w1", "web_search", {"query": "aurora"})
+    provider = ScriptedProvider([("", [tu]), ("Found it.", [])])
+    browser = ReportingBrowser()
+    server = FakeServerTools()
+    seen_tools = []
+    orig = provider.stream
+
+    async def stream(system, history, tools):
+        seen_tools.append([t["name"] for t in tools])
+        async for ev in orig(system, history, tools):
+            yield ev
+
+    provider.stream = stream
+    r = await run_turn(provider, "sys", [UserMsg("hi")], TOOLS, browser, Limits(), lambda d: asyncio.sleep(0), asyncio.Event(), server_tools=server)
+    assert r.status == "ok"
+    assert browser.calls == [], "the browser never runs web tools"
+    assert server.calls == [("web_search", {"query": "aurora"})]
+    assert browser.activity == [("web_search", {"query": "aurora"}, True)]
+    assert "web_search" in seen_tools[0] and "run_command" in seen_tools[0]
+    assert r.actions == [], "searching isn't a change to the deck"

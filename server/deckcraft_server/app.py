@@ -11,16 +11,24 @@ from .auth.local import LocalAuth
 from .config import ProviderCfg, Settings
 from .providers import build_provider
 from .store import Store, User
+from .agent.web import WebTools
 from .ws import RateLimiter, agent_socket
 
 
-def create_app(settings: Settings, store: Store, provider_factory: Callable[[ProviderCfg], object] | None = None) -> FastAPI:
+def create_app(
+    settings: Settings,
+    store: Store,
+    provider_factory: Callable[[ProviderCfg], object] | None = None,
+    web_tools: object | None = None,
+) -> FastAPI:
     app = FastAPI(title="DeckCraft agent server", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     auth = LocalAuth(store, settings.session_secret, secure_cookie=settings.secure_cookie)
     factory = provider_factory or build_provider
     providers = {k: factory(v) for k, v in settings.providers.items()}
     limiter = RateLimiter()
+    if web_tools is None and settings.web.enabled:
+        web_tools = WebTools(settings.web)
     app.include_router(auth.router())
 
     @app.get("/api/conversations")
@@ -36,7 +44,7 @@ def create_app(settings: Settings, store: Store, provider_factory: Callable[[Pro
 
     @app.websocket("/ws/agent")
     async def ws_agent(ws: WebSocket):
-        await agent_socket(ws, auth, settings, store, providers, limiter)
+        await agent_socket(ws, auth, settings, store, providers, limiter, web_tools)
 
     if settings.site_dir is not None and settings.site_dir.exists():
         app.mount("/", StaticFiles(directory=settings.site_dir, html=True), name="site")
