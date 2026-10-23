@@ -1,7 +1,8 @@
 //! The agent pane's link to the DeckCraft agent server that served this page: `fetch` for
 //! sign-in (an HttpOnly session cookie) and a WebSocket at `/ws/agent` for the conversation.
 //! Served from plain static hosting (no `/api/me`), it reports [`WebAgentTransport::no_server`]
-//! and the app drops the agent pane.
+//! and the app drops the agent pane. Once the server has answered, losing it (a restart, a network
+//! drop) only means reconnecting: the pane stays and says so.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,6 +17,8 @@ use wasm_bindgen_futures::JsFuture;
 /// Close code the server uses for "not signed in".
 const CLOSE_UNAUTHORIZED: u16 = 4401;
 const RECONNECT_MS: i32 = 2000;
+/// Longest wait between reconnect attempts.
+const RECONNECT_MAX_MS: i32 = 15_000;
 
 #[derive(Default)]
 struct Inner {
@@ -23,6 +26,10 @@ struct Inner {
     inbox: Vec<ServerMsg>,
     ws: Option<web_sys::WebSocket>,
     no_server: bool,
+    /// The agent server answered at least once: later failures are outages, not "no server".
+    reached: bool,
+    /// Failed reconnect attempts in a row (sets the back-off).
+    attempts: u32,
     was_connected: bool,
     /// The socket's callbacks, dropped with it.
     callbacks: Vec<Closure<dyn FnMut(JsValue)>>,
@@ -55,21 +62,37 @@ impl WebAgentTransport {
     fn check_session(&self) {
         let me = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match fetch("GET", "/api/me", None).await {
-                Ok((200, _)) => me.connect(),
-                Ok((401, _)) => me.set(LinkStatus::LoggedOut),
-                Ok((status, _)) => {
-                    log::info!("no agent server here (/api/me answered {status})");
-                    me.inner.borrow_mut().no_server = true;
-                    me.set(LinkStatus::Failed("No agent server at this address.".into()));
+            let answer = fetch("GET", "/api/me", None).await;
+            let reached = me.inner.borrow().reached;
+            match answer {
+                Ok((200, _)) => {
+                    me.inner.borrow_mut().reached = true;
+                    me.connect();
                 }
-                Err(e) => {
-                    log::info!("no agent server here: {e}");
-                    me.inner.borrow_mut().no_server = true;
-                    me.set(LinkStatus::Failed("No agent server at this address.".into()));
+                Ok((401, _)) => {
+                    me.inner.borrow_mut().reached = true;
+                    me.set(LinkStatus::LoggedOut);
                 }
+                Ok((status, _)) if reached => me.outage(&format!("answered {status}")),
+                Err(e) if reached => me.outage(&e),
+                Ok((status, _)) => me.not_here(&format!("/api/me answered {status}")),
+                Err(e) => me.not_here(&e),
             }
         });
+    }
+
+    /// The page wasn't served by an agent server.
+    fn not_here(&self, why: &str) {
+        log::info!("no agent server here: {why}");
+        self.inner.borrow_mut().no_server = true;
+        self.set(LinkStatus::Failed("No agent server at this address.".into()));
+    }
+
+    /// The agent server went away after answering: keep trying, and say so.
+    fn outage(&self, why: &str) {
+        log::info!("agent server unavailable: {why}");
+        self.set(LinkStatus::Failed("Agent server unavailable, reconnecting…".into()));
+        self.reconnect_later();
     }
 
     fn connect(&self) {
@@ -89,6 +112,7 @@ impl WebAgentTransport {
 
         let me = self.clone();
         let on_open = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+            me.inner.borrow_mut().attempts = 0;
             me.inner.borrow_mut().was_connected = true;
             me.set(LinkStatus::Connected);
             me.send_visibility();
@@ -112,18 +136,16 @@ impl WebAgentTransport {
         let me = self.clone();
         let on_close = Closure::<dyn FnMut(JsValue)>::new(move |e: JsValue| {
             let code = e.dyn_into::<web_sys::CloseEvent>().map(|c| c.code()).unwrap_or(0);
-            let reconnect = {
+            {
                 let mut inner = me.inner.borrow_mut();
                 inner.ws = None;
-                std::mem::replace(&mut inner.was_connected, false)
-            };
+                inner.was_connected = false;
+            }
             if code == CLOSE_UNAUTHORIZED {
                 me.set(LinkStatus::LoggedOut);
             } else {
-                me.set(LinkStatus::Failed("Disconnected from the agent server.".into()));
-                if reconnect {
-                    me.reconnect_later();
-                }
+                // Dropped, or the socket never opened (the server is restarting): try again.
+                me.outage(&format!("socket closed ({code})"));
             }
         });
         ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
@@ -131,6 +153,10 @@ impl WebAgentTransport {
 
         let mut inner = self.inner.borrow_mut();
         if let Some(old) = inner.ws.take() {
+            // Its callbacks are about to be dropped, and its close must not start another retry.
+            old.set_onopen(None);
+            old.set_onmessage(None);
+            old.set_onclose(None);
             let _ = old.close();
         }
         inner.ws = Some(ws);
@@ -154,10 +180,16 @@ impl WebAgentTransport {
     }
 
     fn reconnect_later(&self) {
+        let attempts = {
+            let mut inner = self.inner.borrow_mut();
+            inner.attempts = inner.attempts.saturating_add(1);
+            inner.attempts
+        };
+        let wait = RECONNECT_MS.saturating_mul(1 << attempts.min(3).saturating_sub(1)).min(RECONNECT_MAX_MS);
         let me = self.clone();
         let cb = Closure::once_into_js(move || me.check_session());
         if let Some(w) = web_sys::window() {
-            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), RECONNECT_MS);
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), wait);
         }
     }
 }

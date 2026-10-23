@@ -19,18 +19,19 @@
   <script>
     // Autosaved copies of unsaved presentations (see crates/ui-egui/src/autosave.rs), in IndexedDB:
     // one record per presentation, {key, title, savedAt, owner, bytes: Uint8Array of a .deckcraft file}.
-    // Each tab marks its copies with its id and keeps a heartbeat in localStorage; a tab offers to
-    // restore only copies whose tab is gone (closed or crashed), never those of a tab still open.
+    // Each tab marks its copies with its id and holds a Web Lock named after it for as long as it
+    // lives (the browser releases it when the tab closes or crashes; background-tab timer
+    // throttling can't make it look dead). A tab offers to restore only copies whose tab is gone.
     window.deckcraftRecovery = (() => {
       const tab = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2);
-      const beatKey = id => "deckcraft-tab:" + id;
-      const beat = () => { try { localStorage.setItem(beatKey(tab), String(Date.now())); } catch (_) {} };
-      const alive = id => {
-        try { return Date.now() - Number(localStorage.getItem(beatKey(id)) || 0) < 8000; } catch (_) { return false; }
+      const lockName = id => "deckcraft-tab:" + id;
+      const locks = navigator.locks;
+      if (locks) locks.request(lockName(tab), () => new Promise(() => {}));
+      const liveTabs = async () => {
+        if (!locks) return new Set();
+        const q = await locks.query();
+        return new Set((q.held || []).map(l => l.name));
       };
-      beat();
-      setInterval(beat, 2000);
-      addEventListener("pagehide", () => { try { localStorage.removeItem(beatKey(tab)); } catch (_) {} });
       let db = null;
       const open = () => db ?? (db = new Promise((resolve, reject) => {
         const r = indexedDB.open("deckcraft-recovery", 1);
@@ -51,7 +52,10 @@
         put: (key, title, savedAt, bytes) => tx("readwrite", s => s.put({ key, title, savedAt, owner: tab, bytes })),
         del: key => tx("readwrite", s => s.delete(key)),
         // Copies left behind by tabs that are gone (copies from older builds have no owner).
-        list: async () => (await tx("readonly", s => s.getAll())).filter(e => !e.owner || (e.owner !== tab && !alive(e.owner))),
+        list: async () => {
+          const live = await liveTabs();
+          return (await tx("readonly", s => s.getAll())).filter(e => !e.owner || (e.owner !== tab && !live.has(lockName(e.owner))));
+        },
         all: () => tx("readonly", s => s.getAll()),
       };
     })();
