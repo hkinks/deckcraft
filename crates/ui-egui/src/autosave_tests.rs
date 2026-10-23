@@ -127,3 +127,31 @@ fn earlier_unsaved_work_can_be_discarded() {
     assert_eq!(h.state().session.documents().len(), docs);
     assert!(store.0.borrow().entries.is_empty());
 }
+
+#[test]
+fn offered_decks_say_when_they_were_saved() {
+    use crate::autosave::saved_ago;
+    let now = 10_000_000_000.0;
+    assert_eq!(saved_ago(now, now - 20_000.0), "Autosaved just now");
+    assert_eq!(saved_ago(now, now - 60_000.0), "Autosaved 1 min ago");
+    assert_eq!(saved_ago(now, now - 5.0 * 60_000.0), "Autosaved 5 min ago");
+    assert_eq!(saved_ago(now, now - 3.0 * 3_600_000.0), "Autosaved 3 h ago");
+    assert_eq!(saved_ago(now, now - 2.0 * 86_400_000.0), "Autosaved 2 days ago");
+    assert_eq!(saved_ago(now, 0.0), "Autosaved earlier");
+}
+
+#[test]
+fn several_offered_decks_can_be_restored_at_once() {
+    let store = Store::default();
+    let mut second = earlier_deck();
+    second.key = "deck:second".into();
+    second.title = "Other deck".into();
+    store.0.borrow_mut().entries.extend([earlier_deck(), second]);
+    let mut h = harness(&store);
+    let docs = h.state().session.documents().len();
+    h.get_by_label("Restore all").click();
+    h.run_steps(3);
+    assert_eq!(h.state().session.documents().len(), docs + 2);
+    assert!(store.0.borrow().entries.iter().all(|e| e.key != "deck:earlier" && e.key != "deck:second"));
+    assert!(h.query_by_label("Restore unsaved work?").is_none());
+}

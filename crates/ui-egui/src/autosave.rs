@@ -10,7 +10,31 @@ use std::collections::HashMap;
 
 use serde_json::json;
 
+use egui::vec2;
+
 use crate::SlideApp;
+use crate::icons::{self, Icon};
+use crate::theme::Tokens;
+
+/// The dialog's primary button: the accent fill the app's other dialogs use for OK.
+fn primary(ui: &mut egui::Ui, t: &Tokens, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(egui::RichText::new(label).color(t.accent_text)).fill(t.accent).min_size(vec2(72.0, 26.0)))
+}
+
+/// When a copy was written, for the restore prompt ("Autosaved 5 min ago").
+pub fn saved_ago(now_ms: f64, saved_at: f64) -> String {
+    if saved_at <= 0.0 || saved_at > now_ms + 60_000.0 {
+        return "Autosaved earlier".into();
+    }
+    let min = ((now_ms - saved_at) / 60_000.0).floor() as i64;
+    match min {
+        ..1 => "Autosaved just now".into(),
+        1..60 => format!("Autosaved {min} min ago"),
+        60..1440 => format!("Autosaved {} h ago", min / 60),
+        1440..2880 => "Autosaved yesterday".into(),
+        _ => format!("Autosaved {} days ago", min / 1440),
+    }
+}
 
 /// One saved copy.
 #[derive(Clone, Debug, PartialEq)]
@@ -124,22 +148,69 @@ pub fn prompt(app: &mut SlideApp, ctx: &egui::Context) {
     let offered = a.offered.clone();
     let mut restore: Vec<Recovered> = vec![];
     let mut discard: Vec<String> = vec![];
-    egui::Modal::new(egui::Id::new("autosave_restore")).show(ctx, |ui| {
-        ui.set_max_width(420.0);
-        ui.heading("Restore unsaved work?");
-        ui.label("These presentations had changes that weren't saved when the page was closed.");
-        ui.add_space(6.0);
+    let t = Tokens::get(ctx);
+    let frame = egui::Frame::new()
+        .fill(t.card)
+        .stroke(egui::Stroke::new(1.0, t.card_border))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::same(20))
+        .shadow(egui::Shadow { offset: [0, 8], blur: 28, spread: 0, color: t.shadow });
+    let now = crate::now_ms();
+    egui::Modal::new(egui::Id::new("autosave_restore")).frame(frame).show(ctx, |ui| {
+        ui.set_width(440.0);
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::hover());
+            ui.painter().circle_filled(r.center(), 18.0, t.accent.gamma_multiply(0.14));
+            icons::paint(ui.painter(), egui::Rect::from_center_size(r.center(), vec2(20.0, 20.0)), Icon::Save, t.accent, false);
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("Restore unsaved work?").size(17.0).strong().color(t.text));
+                ui.label(
+                    egui::RichText::new("These presentations had unsaved changes when the page was closed. DeckCraft kept a copy.")
+                        .color(t.text_dim),
+                );
+            });
+        });
+        ui.add_space(10.0);
         for e in &offered {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&e.title).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Discard").clicked() {
-                        discard.push(e.key.clone());
-                    }
-                    if ui.button("Restore").clicked() {
-                        restore.push(e.clone());
-                    }
+            egui::Frame::new()
+                .fill(t.chrome)
+                .stroke(egui::Stroke::new(1.0, t.card_border))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::hover());
+                        icons::paint(ui.painter(), r, Icon::Slide, t.text, false);
+                        ui.add_space(2.0);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.add(egui::Label::new(egui::RichText::new(&e.title).strong().color(t.text)).truncate());
+                            ui.label(egui::RichText::new(saved_ago(now, e.saved_at)).small().color(t.text_faint));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if primary(ui, &t, "Restore").clicked() {
+                                restore.push(e.clone());
+                            }
+                            if ui.add(egui::Button::new("Discard").min_size(vec2(72.0, 26.0))).clicked() {
+                                discard.push(e.key.clone());
+                            }
+                        });
+                    });
                 });
+        }
+        if offered.len() > 1 {
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if primary(ui, &t, "Restore all").clicked() {
+                    restore = offered.clone();
+                    discard.clear();
+                }
+                if ui.add(egui::Button::new("Discard all").min_size(vec2(72.0, 26.0))).clicked() {
+                    restore.clear();
+                    discard = offered.iter().map(|e| e.key.clone()).collect();
+                }
             });
         }
     });
