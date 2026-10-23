@@ -35,7 +35,7 @@ def env(tmp_path):
     asyncio.run(store.add_user("ana", hash_password("pw")))
     settings = Settings.model_validate({
         "default_provider": "fake",
-        "providers": {"fake": {"kind": "openai_compat", "base_url": "http://unused/v1", "model": "fake-model"}},
+        "providers": {"fake": {"kind": "openai_compat", "base_url": "http://unused/v1", "model": "fake-model", "label": "Fake Model"}},
         "session_secret": "x",
     })
     script = []
@@ -77,7 +77,7 @@ def test_hello_returns_providers_without_secrets(env):
     login(client)
     with client.websocket_connect("/ws/agent") as ws:
         ready = hello(ws)
-    assert ready["providers"] == [{"id": "fake", "model": "fake-model", "vision": False}]
+    assert ready["providers"] == [{"id": "fake", "model": "fake-model", "vision": False, "label": "Fake Model"}]
     assert ready["default_provider"] == "fake" and ready["user"] == "ana"
     assert "base_url" not in str(ready) and "api_key" not in str(ready)
 

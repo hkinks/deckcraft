@@ -106,7 +106,7 @@ class Connection:
             await self.send({
                 "type": "ready",
                 "user": self.user.username,
-                "providers": [{"id": k, "model": v.model, "vision": v.vision} for k, v in self.settings.providers.items()],
+                "providers": [{"id": k, "model": v.model, "vision": v.vision, "label": v.label or k} for k, v in self.settings.providers.items()],
                 "default_provider": self.settings.default_provider,
             })
         elif t == "open_conversation":

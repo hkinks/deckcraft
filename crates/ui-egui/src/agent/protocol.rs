@@ -48,6 +48,9 @@ pub struct ProviderInfo {
     pub model: String,
     #[serde(default)]
     pub vision: bool,
+    /// Display name ("Qwen 3.8 (local)"); the id when empty.
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]

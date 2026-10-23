@@ -18,6 +18,7 @@ kind = "anthropic"
 base_url = "${LITELLM_BASE_URL}"
 api_key = "${LITELLM_API_KEY}"
 model = "claude-sonnet-5-5"
+label = "Claude Sonnet 5.5"
 vision = true
 effort = "medium"
 
@@ -26,6 +27,7 @@ kind = "openai_compat"
 base_url = "http://127.0.0.1:8080/v1"   # llama-swap
 api_key = ""
 model = "qwen3.8-27b-q5"
+label = "Qwen 3.8 (local)"
 vision = false
 
 [limits]

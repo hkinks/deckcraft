@@ -23,6 +23,8 @@ class ProviderCfg(BaseModel):
     api_key: str = ""
     model: str
     vision: bool = False
+    # Shown in the agent pane's model picker; the provider id when empty.
+    label: str = ""
     max_tokens: int = 16000
     # Anthropic only: adaptive thinking and effort (Sonnet 5.5 defaults to high; medium suits agent loops).
     thinking: bool = True
@@ -78,6 +80,9 @@ def load(path: Path | None) -> Settings:
             if v := env.get("LITELLM_API_KEY"):
                 p["api_key"] = v
     settings = Settings.model_validate(raw)
+    for pid, p in settings.providers.items():
+        if not p.label:
+            p.label = pid
     if settings.default_provider not in settings.providers:
         raise ValueError(f"default_provider {settings.default_provider!r} is not a configured provider")
     if not settings.session_secret:

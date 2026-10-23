@@ -59,3 +59,10 @@ def test_missing_env_reference_becomes_empty(tmp_path, monkeypatch):
     p = tmp_path / "config.toml"
     p.write_text(TOML)
     assert load(p).providers["claude"].api_key == ""
+
+
+def test_provider_label_defaults_to_its_id(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(TOML)
+    s = load(p)
+    assert s.providers["qwen-local"].label == "qwen-local"

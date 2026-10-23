@@ -1,10 +1,14 @@
-//! The agent pane (right side, collapsible): sign-in, the Chat tab (conversation with each
-//! request's steps folded and a one-line summary with Revert), the Changes tab (the deck's change
-//! log: request, time, status, changed slides, edits, Revert/Restore), the prompt box with
-//! Send/Stop, and the veil that keeps editing input off the deck while the agent works.
+//! The agent pane (right side, collapsible).
+//!
+//! Layout: header (title, model, New chat, close) · underline tabs Chat | Changes ·
+//! a status strip with Stop while the agent works · the tab's content · the prompt box with an
+//! inline send button. Chat shows your messages as bubbles and the agent's replies with an accent
+//! bar; the model's running commentary between steps is dimmed and its steps fold into one row,
+//! followed by a one-line result with slide chips and Revert. Changes is the deck's change log.
+//! While the agent works a light veil keeps editing input off the deck.
 
 use egui::text::LayoutJob;
-use egui::{Align, CornerRadius, Layout, RichText, Sense, TextFormat, Ui, vec2};
+use egui::{Align, Color32, CornerRadius, Layout, RichText, Sense, Stroke, TextFormat, Ui, vec2};
 
 use super::client::{self, ChatItem, PaneTab, RevertOutcome, TurnCard, TurnState};
 use super::transport::LinkStatus;
@@ -13,9 +17,24 @@ use crate::icons::{self, Icon};
 use crate::theme::{self, Tokens};
 
 pub const WIDTH: f32 = 340.0;
-const RED: egui::Color32 = egui::Color32::from_rgb(0xC4, 0x2B, 0x1C);
-const GREEN: egui::Color32 = egui::Color32::from_rgb(0x1E, 0x7B, 0x34);
-const AMBER: egui::Color32 = egui::Color32::from_rgb(0xB2, 0x6B, 0x00);
+const PAD: i8 = 12;
+const TITLE: f32 = 15.0;
+const BODY: f32 = 13.0;
+const META: f32 = 11.0;
+
+/// Suggestions in an empty chat; a click puts one in the prompt box.
+const SUGGESTIONS: &[&str] = &["Add an agenda slide", "Make all titles consistent", "Turn slide 2 into a table", "Tighten the wording on this slide"];
+
+/// Status colours that stay readable on both themes.
+fn ok_color(t: &Tokens) -> Color32 {
+    if t.dark { Color32::from_rgb(0x6F, 0xD0, 0x8C) } else { Color32::from_rgb(0x1E, 0x7B, 0x34) }
+}
+fn warn_color(t: &Tokens) -> Color32 {
+    if t.dark { Color32::from_rgb(0xF2, 0xB2, 0x4C) } else { Color32::from_rgb(0xA8, 0x60, 0x00) }
+}
+fn err_color(t: &Tokens) -> Color32 {
+    if t.dark { Color32::from_rgb(0xFF, 0x8A, 0x80) } else { Color32::from_rgb(0xC4, 0x2B, 0x1C) }
+}
 
 pub fn is_open(app: &SlideApp) -> bool {
     app.agent.as_ref().is_some_and(|a| a.state.open)
@@ -39,10 +58,13 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
         .resizable(true)
         .default_size(WIDTH.min(max))
         .size_range(min..=max)
-        .frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::same(10)))
+        .frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::same(PAD)))
         .show(ui, |ui| {
+            // A hairline between the pane and the editor.
+            let r = ui.max_rect().expand(f32::from(PAD));
+            ui.painter().with_clip_rect(ui.ctx().content_rect()).vline(r.left(), r.y_range(), Stroke::new(1.0, t.border));
+            ui.spacing_mut().item_spacing.y = 6.0;
             header(app, ui, &t);
-            ui.add_space(4.0);
             let Some(status) = app.agent.as_ref().map(|a| a.transport.status()) else { return };
             match status {
                 LinkStatus::LoggedOut => sign_in(app, ui, None),
@@ -63,7 +85,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
                 }
                 LinkStatus::Connected => {
                     tabs(app, ui, &t);
-                    ui.separator();
+                    working_strip(app, ui, &t);
                     match app.agent.as_ref().map_or(PaneTab::Chat, |a| a.state.tab) {
                         PaneTab::Chat => chat(app, ui, &t),
                         PaneTab::Changes => changes(app, ui, &t),
@@ -73,35 +95,60 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
         });
 }
 
+fn icon_button(ui: &mut Ui, t: &Tokens, icon: Icon, name: &str, tip: &str, enabled: bool) -> bool {
+    let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), if enabled { Sense::click() } else { Sense::hover() });
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(r, CornerRadius::same(4), t.hover);
+    }
+    icons::paint(ui.painter(), r.shrink(4.0), icon, if enabled { t.text_dim } else { t.text_faint }, false);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    enabled && resp.on_hover_text(tip).clicked()
+}
+
+fn provider_name(p: &super::protocol::ProviderInfo) -> String {
+    if p.label.is_empty() { p.id.clone() } else { p.label.clone() }
+}
+
 fn header(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
+    let busy = client::busy(app);
+    let connected = app.agent.as_ref().is_some_and(|a| a.transport.status() == LinkStatus::Connected);
+    let mut close = false;
+    let mut new_chat = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new("AI Agent").font(theme::bold(16.0)));
+        ui.label(RichText::new("AI Agent").font(theme::bold(TITLE)).color(t.text));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(4), t.hover);
-            }
-            icons::paint(ui.painter(), r.shrink(3.0), Icon::Close, t.text_dim, false);
             // While a turn runs the pane stays open: Stop lives here.
-            if resp.on_hover_text("Close the agent pane").clicked() && !client::busy(app) {
-                toggle(app);
+            close = icon_button(ui, t, Icon::Close, "Close the agent pane", "Close the agent pane", !busy);
+            if connected {
+                let r = ui.add_enabled(!busy, egui::Button::new(RichText::new("New chat").font(theme::font(12.0))).frame(false));
+                new_chat = r.on_hover_text("Start a new conversation about this deck (the change log stays)").clicked();
             }
             let Some(a) = app.agent.as_mut() else { return };
+            let current = a.state.provider.clone().unwrap_or_default();
+            let name = a.state.providers.iter().find(|p| p.id == current).map(provider_name).unwrap_or(current.clone());
             if a.state.providers.len() > 1 {
-                let current = a.state.provider.clone().unwrap_or_default();
-                egui::ComboBox::from_id_salt("agent_provider").selected_text(current.clone()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("agent_provider").selected_text(RichText::new(name).font(theme::font(12.0))).show_ui(ui, |ui| {
                     for p in a.state.providers.clone() {
-                        let label = format!("{} ({})", p.id, p.model);
-                        if ui.selectable_label(current == p.id, label).clicked() {
+                        let vision = if p.vision { " · sees slides" } else { "" };
+                        if ui.selectable_label(current == p.id, format!("{}{vision}", provider_name(&p))).on_hover_text(&p.model).clicked() {
                             a.state.provider = Some(p.id.clone());
                         }
                     }
                 });
-            } else if let Some(p) = a.state.providers.first() {
-                ui.label(RichText::new(&p.model).color(t.text_dim).font(theme::font(12.0)));
+            } else if !name.is_empty() {
+                ui.label(RichText::new(name).color(t.text_dim).font(theme::font(12.0)));
             }
         });
     });
+    if close {
+        toggle(app);
+    }
+    if new_chat {
+        client::new_conversation(app);
+        if let Some(a) = app.agent.as_mut() {
+            a.state.tab = PaneTab::Chat;
+        }
+    }
 }
 
 /// The deck's turns (its change log), oldest first, with their indices.
@@ -113,51 +160,72 @@ fn deck_turns(app: &SlideApp) -> Vec<(usize, TurnCard)> {
         .unwrap_or_default()
 }
 
+/// Underline tabs: Chat | Changes (n).
 fn tabs(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let n = deck_turns(app).len();
-    let busy = client::busy(app);
     let Some(a) = app.agent.as_mut() else { return };
-    let mut new_chat = false;
-    ui.horizontal(|ui| {
-        if ui.selectable_label(a.state.tab == PaneTab::Chat, "Chat").clicked() {
-            a.state.tab = PaneTab::Chat;
-        }
-        if ui.selectable_label(a.state.tab == PaneTab::Changes, format!("Changes ({n})")).on_hover_text("Everything the agent changed in this deck, with Revert").clicked() {
-            a.state.tab = PaneTab::Changes;
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if !busy {
-                let r = ui.add(egui::Button::new(RichText::new("✚").color(t.text_dim)).frame(false));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New chat"));
-                if r.on_hover_text("New chat: start a new conversation about this deck (the change log stays)").clicked() {
-                    new_chat = true;
-                }
+    let row = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 16.0;
+        for (tab, label, tip) in [
+            (PaneTab::Chat, "Chat".to_string(), "The conversation"),
+            (PaneTab::Changes, format!("Changes ({n})"), "Everything the agent changed in this deck, with Revert"),
+        ] {
+            let on = a.state.tab == tab;
+            let text = RichText::new(label).font(if on { theme::bold(BODY) } else { theme::font(BODY) }).color(if on { t.text } else { t.text_dim });
+            let r = ui.add(egui::Label::new(text).sense(Sense::click())).on_hover_text(tip);
+            if on {
+                ui.painter().hline(r.rect.x_range(), r.rect.bottom() + 4.0, Stroke::new(2.0, t.accent));
             }
+            if r.clicked() {
+                a.state.tab = tab;
+            }
+        }
+    });
+    let y = row.response.rect.bottom() + 5.0;
+    ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, t.border));
+    ui.add_space(6.0);
+}
+
+/// While the agent works: spinner, what it's doing and Stop, at the top of the pane.
+fn working_strip(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
+    if !client::busy(app) {
+        return;
+    }
+    let steps = app.agent.as_ref().map_or(0, |a| a.state.items.iter().rev().take_while(|i| !matches!(i, ChatItem::User(_))).filter(|i| matches!(i, ChatItem::Tool { .. })).count());
+    let stopping = app.agent.as_ref().is_some_and(|a| matches!(a.state.turn, TurnState::Running { stopping: true, .. }));
+    let mut stop = false;
+    egui::Frame::NONE.fill(t.selected).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new("Agent is editing the deck…").font(theme::font(BODY)).color(t.text));
+            if steps > 0 {
+                ui.label(RichText::new(format!("{steps} step{}", if steps == 1 { "" } else { "s" })).font(theme::font(META)).color(t.text_dim));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if stopping {
+                    ui.add_enabled(false, egui::Button::new("Stopping…"));
+                } else {
+                    stop = ui.add(egui::Button::new("Stop").stroke(Stroke::new(1.0, t.border))).on_hover_text("Stop after the current step").clicked();
+                }
+            });
         });
     });
-    if new_chat {
-        client::new_conversation(app);
-        if let Some(a) = app.agent.as_mut() {
-            a.state.tab = PaneTab::Chat;
-        }
+    if stop {
+        client::stop(app);
     }
 }
 
 /// `**bold**` runs of one line: (text, bold). Other markdown stays as written.
 pub fn md_segments(line: &str) -> Vec<(String, bool)> {
-    let mut out = vec![];
-    let mut bold = false;
-    for (i, part) in line.split("**").enumerate() {
-        if i > 0 {
-            bold = !bold;
-        }
-        if !part.is_empty() {
-            out.push((part.to_string(), bold));
-        }
-    }
-    // An unmatched `**` is literal.
     if line.matches("**").count() % 2 == 1 {
         return vec![(line.to_string(), false)];
+    }
+    let mut out = vec![];
+    for (i, part) in line.split("**").enumerate() {
+        if !part.is_empty() {
+            out.push((part.to_string(), i % 2 == 1));
+        }
     }
     out
 }
@@ -176,16 +244,16 @@ pub fn md_line(line: &str) -> (String, bool) {
     (line.to_string(), false)
 }
 
-fn markdown(ui: &mut Ui, text: &str, t: &Tokens) {
+fn markdown(ui: &mut Ui, text: &str, color: Color32, size: f32) {
     let mut job = LayoutJob::default();
     for (n, raw) in text.lines().enumerate() {
         if n > 0 {
-            job.append("\n", 0.0, TextFormat { font_id: theme::font(13.0), color: t.text, ..Default::default() });
+            job.append("\n", 0.0, TextFormat { font_id: theme::font(size), color, ..Default::default() });
         }
         let (line, heading) = md_line(raw);
         for (seg, bold) in md_segments(&line) {
-            let font = if bold || heading { theme::bold(13.0) } else { theme::font(13.0) };
-            job.append(&seg, 0.0, TextFormat { font_id: font, color: t.text, ..Default::default() });
+            let font = if bold || heading { theme::bold(size) } else { theme::font(size) };
+            job.append(&seg, 0.0, TextFormat { font_id: font, color, ..Default::default() });
         }
     }
     job.wrap.max_width = ui.available_width();
@@ -204,20 +272,22 @@ fn ago(ms: Option<f64>) -> String {
     }
 }
 
-fn status_chip(ui: &mut Ui, status: &str, reverted: bool, t: &Tokens) {
-    if reverted {
-        ui.label(RichText::new("↩ reverted").color(t.text_dim).font(theme::font(11.0)));
-        return;
-    }
-    let (text, color) = match status {
-        "ok" | "" => ("✓ done", GREEN),
-        "stopped" => ("■ stopped", AMBER),
-        "interrupted" => ("⚠ interrupted", AMBER),
-        "limit" => ("⚠ limit reached", AMBER),
-        _ => ("✗ error", RED),
+/// A small coloured pill: ✓ done, ■ stopped, ↩ reverted…
+fn status_pill(ui: &mut Ui, status: &str, reverted: bool, t: &Tokens) {
+    let (text, color) = if reverted {
+        ("↩ reverted", t.text_dim)
+    } else {
+        match status {
+            "ok" | "" => ("✓ done", ok_color(t)),
+            "stopped" => ("■ stopped", warn_color(t)),
+            "interrupted" => ("⚠ interrupted", warn_color(t)),
+            "limit" => ("⚠ limit reached", warn_color(t)),
+            _ => ("✗ error", err_color(t)),
+        }
     };
-    let _ = t;
-    ui.label(RichText::new(text).color(color).font(theme::font(11.0)));
+    egui::Frame::NONE.fill(color.gamma_multiply(0.15)).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+        ui.label(RichText::new(text).color(color).font(theme::font(META)));
+    });
 }
 
 fn changes_summary(c: &TurnCard) -> String {
@@ -225,15 +295,7 @@ fn changes_summary(c: &TurnCard) -> String {
     if n == 0 {
         return "No changes".into();
     }
-    let mut s = format!("{n} change{}", if n == 1 { "" } else { "s" });
-    if !c.slides.is_empty() {
-        let list: Vec<String> = c.slides.iter().take(6).map(|i| (i + 1).to_string()).collect();
-        s.push_str(&format!(" · slide{} {}", if c.slides.len() == 1 { "" } else { "s" }, list.join(", ")));
-        if c.slides.len() > 6 {
-            s.push('…');
-        }
-    }
-    s
+    format!("{n} change{}", if n == 1 { "" } else { "s" })
 }
 
 /// What a click on a turn's buttons asks for, applied after drawing.
@@ -245,24 +307,37 @@ enum TurnAction {
     GoTo(usize),
 }
 
-fn revert_button(ui: &mut Ui, i: usize, c: &TurnCard, running: bool, reverted: bool, out: &mut Option<TurnAction>) {
-    if reverted {
-        if ui.add_enabled(!running, egui::Button::new("Restore")).on_hover_text("Bring this request's changes back (one undoable step)").clicked() {
-            *out = Some(TurnAction::Restore(i));
-        }
-        return;
+/// Revert (or Restore once reverted) as a real button.
+fn revert_button(ui: &mut Ui, t: &Tokens, i: usize, c: &TurnCard, running: bool, reverted: bool, out: &mut Option<TurnAction>) {
+    let (name, tip, can, action) = if reverted {
+        ("Restore", "Bring this request's changes back (one undoable step)", !running, TurnAction::Restore(i))
+    } else {
+        let tip = if c.before.is_none() { "Revert is available for requests made since this page was opened" } else { "Put the deck back as it was before this request (one undoable step)" };
+        ("Revert", tip, c.before.is_some() && !running, TurnAction::Revert(i, false))
+    };
+    let glyph = if reverted { "↻" } else { "↺" };
+    let r = ui.add_enabled(can, egui::Button::new(RichText::new(format!("{glyph} {name}")).font(theme::font(12.0))).stroke(Stroke::new(1.0, t.border)));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can, name));
+    if r.on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+        *out = Some(action);
     }
-    let can = c.before.is_some() && !running;
-    let tip = if c.before.is_none() { "Revert is available for requests made since this page was opened" } else { "Put the deck back as it was before this request (one undoable step)" };
-    if ui.add_enabled(can, egui::Button::new("Revert")).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
-        *out = Some(TurnAction::Revert(i, false));
+}
+
+fn slide_chips(ui: &mut Ui, c: &TurnCard, max: usize, out: &mut Option<TurnAction>) {
+    for s in c.slides.iter().take(max) {
+        if ui.small_button(format!("Slide {}", s + 1)).on_hover_text("Go to this slide").clicked() {
+            *out = Some(TurnAction::GoTo(*s));
+        }
+    }
+    if c.slides.len() > max {
+        ui.label(RichText::new(format!("+{}", c.slides.len() - max)).font(theme::font(META)));
     }
 }
 
 fn confirm_row(ui: &mut Ui, i: usize, t: &Tokens, out: &mut Option<TurnAction>) {
-    ui.label(RichText::new("Changes made after this request will be discarded too.").color(t.text_dim));
+    ui.label(RichText::new("Changes made after this request will be discarded too.").color(t.text_dim).font(theme::font(12.0)));
     ui.horizontal(|ui| {
-        if ui.button("Discard later changes and revert").clicked() {
+        if ui.add(egui::Button::new("Discard later changes and revert").stroke(Stroke::new(1.0, err_color(t)))).clicked() {
             *out = Some(TurnAction::Revert(i, true));
         }
         if ui.button("Cancel").clicked() {
@@ -309,9 +384,9 @@ fn field<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     let t = Tokens::get(ui.ctx());
     egui::Frame::NONE
         .fill(t.field_bg)
-        .stroke(egui::Stroke::new(1.0, t.border))
-        .corner_radius(CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(6, 4))
+        .stroke(Stroke::new(1.0, t.border))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, add)
         .inner
 }
@@ -339,18 +414,48 @@ fn sign_in(app: &mut SlideApp, ui: &mut Ui, error: Option<String>) {
     }
 }
 
+
+/// The agent's text: an accent bar on the left; `header` on its first reply of a turn.
+fn agent_reply(ui: &mut Ui, t: &Tokens, text: &str, header: bool, dim: bool) {
+    let r = egui::Frame::NONE.inner_margin(egui::Margin { left: 10, right: 0, top: 0, bottom: 0 }).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if header {
+            ui.label(RichText::new("Agent").font(theme::bold(META)).color(t.accent));
+        }
+        if dim {
+            markdown(ui, text, t.text_dim, 12.0);
+        } else {
+            markdown(ui, text, t.text, BODY);
+        }
+    });
+    let rect = r.response.rect;
+    ui.painter().vline(rect.left() + 2.0, rect.y_range(), Stroke::new(2.0, if dim { t.border } else { t.accent.gamma_multiply(0.6) }));
+}
+
 fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let running = client::busy(app);
-    let input_h = 110.0;
+    let input_h = 104.0;
     let scroll_h = (ui.available_height() - input_h).max(80.0);
     let mut action = None;
+    let mut suggestion = None;
     egui::ScrollArea::vertical().id_salt("agent_chat").max_height(scroll_h).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
         let Some(a) = app.agent.as_ref() else { return };
-        if a.state.items.is_empty() {
-            ui.label(RichText::new("Ask for changes to this deck: \"add a slide comparing the three plans\", \"make all titles dark blue\", \"turn slide 2 into a table\". Each request is one undo step; the Changes tab lists them all.").color(t.text_dim));
-        }
         let items = &a.state.items;
+        if items.is_empty() {
+            ui.add_space(8.0);
+            ui.label(RichText::new("What should I change?").font(theme::bold(BODY)).color(t.text));
+            ui.label(RichText::new("Describe it in your own words. Each request is one undo step, and the Changes tab lists them all with Revert.").font(theme::font(12.0)).color(t.text_dim));
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                for s in SUGGESTIONS {
+                    if ui.add(egui::Button::new(RichText::new(*s).font(theme::font(12.0))).stroke(Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(10))).clicked() {
+                        suggestion = Some(s.to_string());
+                    }
+                }
+            });
+        }
         let mut k = 0;
+        let mut replied = false;
         while k < items.len() {
             match &items[k] {
                 ChatItem::Tool { .. } => {
@@ -362,47 +467,52 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                     let steps = &items[start..k];
                     let failed = steps.iter().filter(|s| matches!(s, ChatItem::Tool { ok: false, .. })).count();
                     let title = if failed > 0 { format!("{} steps ({failed} failed)", steps.len()) } else { format!("{} steps", steps.len()) };
-                    egui::CollapsingHeader::new(RichText::new(title).font(theme::font(12.0)).color(t.text_dim)).id_salt(("steps", start)).default_open(false).show(ui, |ui| {
+                    egui::CollapsingHeader::new(RichText::new(title).font(theme::font(META)).color(t.text_dim)).id_salt(("steps", start)).default_open(false).show(ui, |ui| {
                         for s in steps {
                             if let ChatItem::Tool { name, ok, summary } = s {
                                 let mark = if *ok { "✓" } else { "✗" };
-                                ui.label(RichText::new(format!("{mark} {name}")).font(theme::font(12.0)).color(if *ok { t.text_dim } else { RED })).on_hover_text(summary);
+                                ui.label(RichText::new(format!("{mark} {name}")).font(theme::font(META)).color(if *ok { t.text_dim } else { err_color(t) })).on_hover_text(summary);
                             }
                         }
                     });
-                    ui.add_space(2.0);
                     continue;
                 }
                 ChatItem::User(s) => {
-                    egui::Frame::NONE.fill(t.selected).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(RichText::new(s).color(t.text));
+                    replied = false;
+                    ui.add_space(4.0);
+                    ui.with_layout(Layout::top_down(Align::Max), |ui| {
+                        egui::Frame::NONE.fill(t.selected).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
+                            ui.set_max_width(ui.available_width() * 0.85);
+                            ui.label(RichText::new(s).font(theme::font(BODY)).color(t.text));
+                        });
                     });
                 }
-                ChatItem::Assistant(s) => markdown(ui, s, t),
+                ChatItem::Assistant(s) => {
+                    // Text followed by more steps is the model thinking aloud: dimmed.
+                    let narration = matches!(items.get(k + 1), Some(ChatItem::Tool { .. }));
+                    agent_reply(ui, t, s, !replied, narration);
+                    replied = true;
+                }
                 ChatItem::Notice(s) => {
-                    ui.label(RichText::new(s).italics().color(t.text_dim));
+                    ui.label(RichText::new(s).italics().font(theme::font(12.0)).color(t.text_dim));
                 }
                 ChatItem::Turn(i) => {
                     if let Some(c) = a.state.turns.get(*i) {
                         let reverted = client::is_reverted(app, *i);
-                        egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            // Summary on its own line (it wraps in a narrow pane), buttons below.
-                            ui.horizontal_wrapped(|ui| {
-                                status_chip(ui, &c.status, reverted, t);
-                                ui.label(RichText::new(changes_summary(c)).font(theme::font(12.0)));
-                            });
-                            ui.horizontal(|ui| {
-                                if ui.add(egui::Button::new(RichText::new("Details").color(t.text_dim)).frame(false)).clicked() {
-                                    action = Some(TurnAction::Details);
-                                }
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, *i, c, running, reverted, &mut action));
-                            });
-                            if a.state.confirm_revert == Some(*i) {
-                                confirm_row(ui, *i, t, &mut action);
-                            }
+                        ui.horizontal_wrapped(|ui| {
+                            status_pill(ui, &c.status, reverted, t);
+                            ui.label(RichText::new(changes_summary(c)).font(theme::font(12.0)).color(t.text_dim));
+                            slide_chips(ui, c, 3, &mut action);
                         });
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(RichText::new("Details").font(theme::font(12.0)).color(t.text_dim)).frame(false)).on_hover_text("Open this request in Changes").clicked() {
+                                action = Some(TurnAction::Details);
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, t, *i, c, running, reverted, &mut action));
+                        });
+                        if a.state.confirm_revert == Some(*i) {
+                            confirm_row(ui, *i, t, &mut action);
+                        }
                     }
                 }
             }
@@ -411,38 +521,37 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         }
     });
     apply(app, action);
-    ui.separator();
-    if running {
-        let stopping = app.agent.as_ref().is_some_and(|a| matches!(a.state.turn, TurnState::Running { stopping: true, .. }));
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(RichText::new("Agent is editing the deck…").color(t.text));
-        });
-        if stopping {
-            ui.add_enabled(false, egui::Button::new("Stopping…"));
-        } else if ui.button("Stop").clicked() {
-            client::stop(app);
-        }
-        return;
-    }
     let Some(a) = app.agent.as_mut() else { return };
-    let edit = field(ui, |ui| {
-        ui.add(
-            egui::TextEdit::multiline(&mut a.state.input)
-                .hint_text("Describe a change… (Enter to send, Shift+Enter for a new line)")
-                .frame(egui::Frame::NONE)
-                .desired_rows(3)
-                .desired_width(f32::INFINITY),
-        )
+    if let Some(s) = suggestion {
+        a.state.input = s;
+    }
+    ui.add_space(4.0);
+    let mut send = false;
+    let enter = field(ui, |ui| {
+        ui.horizontal(|ui| {
+            let w = ui.available_width() - 30.0;
+            let edit = ui.add_enabled(
+                !running,
+                egui::TextEdit::multiline(&mut a.state.input).hint_text("Ask for a change…").frame(egui::Frame::NONE).desired_rows(2).desired_width(w),
+            );
+            let can = !running && !a.state.input.trim().is_empty();
+            ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), if can { Sense::click() } else { Sense::hover() });
+                ui.painter().rect_filled(r, CornerRadius::same(13), if can { t.accent } else { t.border });
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "➤", theme::font(12.0), if can { t.accent_text } else { t.text_faint });
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can, "Send"));
+                send = can && resp.on_hover_text("Send (Enter)").clicked();
+            });
+            edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
+        })
+        .inner
     });
-    let enter = edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+    ui.label(RichText::new("Enter to send · Shift+Enter for a new line").font(theme::font(META)).color(t.text_faint));
     if enter && a.state.input.ends_with('\n') {
         a.state.input.pop();
     }
-    let can_send = !a.state.input.trim().is_empty();
-    let send = ui.add_enabled(can_send, egui::Button::new("Send")).clicked() || (enter && can_send);
-    if send {
-        let text = app.agent.as_mut().map(|a| std::mem::take(&mut a.state.input)).unwrap_or_default();
+    if (send || enter) && !running && !a.state.input.trim().is_empty() {
+        let text = std::mem::take(&mut a.state.input);
         client::send_prompt(app, &text);
     }
 }
@@ -454,37 +563,31 @@ fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let mut action = None;
     egui::ScrollArea::vertical().id_salt("agent_changes").auto_shrink([false, false]).show(ui, |ui| {
         if turns.is_empty() {
-            ui.label(RichText::new("No agent changes to this deck yet. Each request you send appears here, with what it changed and a Revert button.").color(t.text_dim));
+            ui.add_space(8.0);
+            ui.label(RichText::new("No changes yet").font(theme::bold(BODY)).color(t.text));
+            ui.label(RichText::new("Each request you send shows up here with the slides it touched, what changed, and a Revert button.").font(theme::font(12.0)).color(t.text_dim));
         }
         for (i, c) in turns.iter().rev() {
             let reverted = client::is_reverted(app, *i);
-            egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+            egui::Frame::NONE.fill(t.chrome).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    status_chip(ui, &c.status, reverted, t);
-                    ui.label(RichText::new(ago(c.time)).font(theme::font(11.0)).color(t.text_faint));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, *i, c, running, reverted, &mut action));
+                    status_pill(ui, &c.status, reverted, t);
+                    ui.label(RichText::new(changes_summary(c)).font(theme::font(12.0)).color(t.text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, t, *i, c, running, reverted, &mut action));
                 });
-                ui.label(RichText::new(&c.prompt).color(t.text));
-                if !c.slides.is_empty() || c.added > 0 || c.removed > 0 {
-                    ui.horizontal_wrapped(|ui| {
-                        for s in c.slides.iter().take(12) {
-                            if ui.small_button(format!("Slide {}", s + 1)).on_hover_text("Go to this slide").clicked() {
-                                action = Some(TurnAction::GoTo(*s));
-                            }
-                        }
-                        let mut extra = vec![];
-                        if c.added > 0 {
-                            extra.push(format!("+{} added", c.added));
-                        }
-                        if c.removed > 0 {
-                            extra.push(format!("−{} removed", c.removed));
-                        }
-                        if !extra.is_empty() {
-                            ui.label(RichText::new(extra.join(" · ")).font(theme::font(11.0)).color(t.text_dim));
-                        }
-                    });
+                if !c.slides.is_empty() {
+                    ui.horizontal_wrapped(|ui| slide_chips(ui, c, 12, &mut action));
                 }
+                ui.label(RichText::new(format!("“{}”", c.prompt.trim())).font(theme::font(12.0)).color(t.text_dim));
+                let mut meta = vec![ago(c.time)];
+                if c.added > 0 {
+                    meta.push(format!("+{} slide{}", c.added, if c.added == 1 { "" } else { "s" }));
+                }
+                if c.removed > 0 {
+                    meta.push(format!("−{} slide{}", c.removed, if c.removed == 1 { "" } else { "s" }));
+                }
+                ui.label(RichText::new(meta.join(" · ")).font(theme::font(META)).color(t.text_faint));
                 let labels = client::edit_labels(&c.actions);
                 if !labels.is_empty() {
                     egui::CollapsingHeader::new(RichText::new(format!("What changed ({})", c.actions.len())).font(theme::font(12.0)))
@@ -500,7 +603,7 @@ fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                     confirm_row(ui, *i, t, &mut action);
                 }
             });
-            ui.add_space(6.0);
+            ui.add_space(8.0);
         }
     });
     apply(app, action);

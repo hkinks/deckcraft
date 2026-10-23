@@ -23,7 +23,7 @@ fn setup() -> (SlideApp, egui::Context, Wire) {
     assert_eq!(wire.sent_of("hello").len(), 1);
     wire.push(ServerMsg::Ready {
         user: "ana".into(),
-        providers: vec![ProviderInfo { id: "q".into(), model: "qwen".into(), vision: false }],
+        providers: vec![ProviderInfo { id: "q".into(), model: "qwen".into(), vision: false, label: String::new() }],
         default_provider: "q".into(),
     });
     client::tick(&mut app, &ctx);
@@ -233,7 +233,7 @@ fn revert_survives_a_reconnect() {
     *wire.status.borrow_mut() = Some(LinkStatus::Failed("disconnected".into()));
     client::tick(&mut app, &ctx);
     *wire.status.borrow_mut() = Some(LinkStatus::Connected);
-    wire.push(ServerMsg::Ready { user: "ana".into(), providers: vec![ProviderInfo { id: "q".into(), model: "m".into(), vision: false }], default_provider: "q".into() });
+    wire.push(ServerMsg::Ready { user: "ana".into(), providers: vec![ProviderInfo { id: "q".into(), model: "m".into(), vision: false, label: String::new() }], default_provider: "q".into() });
     client::tick(&mut app, &ctx);
     wire.push(ServerMsg::History {
         conversation_id: Some("c".into()),

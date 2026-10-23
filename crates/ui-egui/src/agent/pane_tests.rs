@@ -21,7 +21,7 @@ fn harness(status: LinkStatus) -> (Harness<'static, SlideApp>, Wire) {
     app.set_agent_transport(Box::new(Fake(wire.clone())));
     wire.push(ServerMsg::Ready {
         user: "ana".into(),
-        providers: vec![ProviderInfo { id: "qwen-local".into(), model: "qwen3.8".into(), vision: false }],
+        providers: vec![ProviderInfo { id: "qwen-local".into(), model: "qwen3.8".into(), vision: false, label: String::new() }],
         default_provider: "qwen-local".into(),
     });
     let mut h = Harness::builder().with_size(egui::vec2(1500.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
@@ -110,7 +110,7 @@ fn changes_tab_lists_turns_and_reverts() {
     let n = h.state().session.active().unwrap().doc.slides.len();
     h.get_by_label("Changes (1)").click();
     h.run_steps(2);
-    h.get_by_label("add a closing slide");
+    h.get_by_label("“add a closing slide”");
     h.get_by_label("Revert").click();
     h.run_steps(2);
     assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n - 1);
@@ -190,4 +190,37 @@ fn changes_tab_offers_restore_after_revert() {
     h.get_by_label("Restore").click();
     h.run_steps(2);
     assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n);
+}
+
+#[test]
+fn empty_chat_offers_suggestions_that_fill_the_prompt() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    h.get_by_label("Add an agenda slide").click();
+    h.run_steps(2);
+    assert_eq!(h.state().agent.as_ref().unwrap().state.input, "Add an agenda slide");
+    assert!(wire.sent_of("user_message").is_empty(), "a suggestion fills the box, it doesn't send");
+}
+
+#[test]
+fn working_strip_with_stop_sits_on_top_while_running() {
+    let (mut h, _) = harness(LinkStatus::Connected);
+    client::send_prompt(h.state_mut(), "do it");
+    h.run_steps(2);
+    let strip = h.get_by_label("Agent is editing the deck…").rect();
+    let stop = h.get_by_label("Stop").rect();
+    let prompt = h.get_by_label("Send").rect();
+    assert!(strip.top() < prompt.top() - 200.0, "status strip is at the top, not by the prompt");
+    assert!((stop.center().y - strip.center().y).abs() < 20.0, "Stop sits in the strip");
+}
+
+#[test]
+fn header_shows_the_friendly_model_name() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    wire.push(ServerMsg::Ready {
+        user: "ana".into(),
+        providers: vec![ProviderInfo { id: "qwen-local".into(), model: "qwen3.8".into(), vision: false, label: "Qwen 3.8 (local)".into() }],
+        default_provider: "qwen-local".into(),
+    });
+    h.run_steps(3);
+    h.get_by_label("Qwen 3.8 (local)");
 }
