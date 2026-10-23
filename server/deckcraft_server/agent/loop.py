@@ -34,9 +34,23 @@ class TurnResult:
 READ_ONLY = {"list_commands", "inspect_document", "inspect_slide", "render_slide", "get_deck_json", "go_to_slide", "select"}
 
 
+# Shortcut tools, logged as the editor command they run (so the pane shows its menu label).
+TOOL_COMMANDS = {
+    "add_slide": "slide.new",
+    "add_shape": "shape.insert",
+    "add_text_box": "insert.textBox",
+    "set_text": "text.set",
+    "insert_table": "insert.table",
+    "insert_chart": "insert.chart",
+    "patch_deck_json": "doc.patch",
+}
+
+
 def describe(name: str, input: dict) -> list[str]:
     if name in READ_ONLY:
         return []
+    if name in TOOL_COMMANDS:
+        return [TOOL_COMMANDS[name]]
     if name == "run_command":
         return [str(input.get("command", "run_command"))]
     if name == "batch":

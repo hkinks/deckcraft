@@ -195,3 +195,15 @@ def test_flatten_drops_oldest_turns_beyond_the_budget():
     assert flat[0].text.startswith("q") and flat[-1].text == "a9"
     assert sum(len(getattr(x, "text", "")) for x in flat) <= 1000
     assert isinstance(flat[0], UserMsg)
+
+
+def test_shortcut_tools_are_logged_as_their_editor_commands():
+    from deckcraft_server.agent.loop import describe
+
+    assert describe("add_slide", {"layout": "title"}) == ["slide.new"]
+    assert describe("add_shape", {}) == ["shape.insert"]
+    assert describe("add_text_box", {}) == ["insert.textBox"]
+    assert describe("set_text", {}) == ["text.set"]
+    assert describe("insert_table", {}) == ["insert.table"]
+    assert describe("insert_chart", {}) == ["insert.chart"]
+    assert describe("patch_deck_json", {}) == ["doc.patch"]
