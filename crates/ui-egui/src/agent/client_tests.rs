@@ -300,3 +300,35 @@ fn new_chat_keeps_the_change_log() {
     assert_eq!(st.turns.len(), 1);
     assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
 }
+
+#[test]
+fn reverted_turn_can_be_restored() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "x");
+    wire.push(call("t1", "slide.new", json!({})));
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    let after = doc(&app);
+    assert!(!client::is_reverted(&app, 0));
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+    assert!(client::is_reverted(&app, 0));
+    assert!(client::restore(&mut app, 0));
+    assert!(Arc::ptr_eq(&doc(&app), &after));
+    assert!(!client::is_reverted(&app, 0));
+}
+
+#[test]
+fn restore_is_not_offered_once_the_deck_moved_on() {
+    // Restoring then would silently throw away the later edit.
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "x");
+    wire.push(call("t1", "slide.new", json!({})));
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    client::revert(&mut app, 0, false);
+    app.run("slide.new", json!({})).unwrap();
+    let edited = doc(&app);
+    assert!(!client::is_reverted(&app, 0));
+    assert!(!client::restore(&mut app, 0));
+    assert!(Arc::ptr_eq(&doc(&app), &edited));
+}

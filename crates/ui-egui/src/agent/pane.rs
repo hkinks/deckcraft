@@ -204,7 +204,11 @@ fn ago(ms: Option<f64>) -> String {
     }
 }
 
-fn status_chip(ui: &mut Ui, status: &str, t: &Tokens) {
+fn status_chip(ui: &mut Ui, status: &str, reverted: bool, t: &Tokens) {
+    if reverted {
+        ui.label(RichText::new("↩ reverted").color(t.text_dim).font(theme::font(11.0)));
+        return;
+    }
     let (text, color) = match status {
         "ok" | "" => ("✓ done", GREEN),
         "stopped" => ("■ stopped", AMBER),
@@ -235,12 +239,19 @@ fn changes_summary(c: &TurnCard) -> String {
 /// What a click on a turn's buttons asks for, applied after drawing.
 enum TurnAction {
     Revert(usize, bool),
+    Restore(usize),
     CancelRevert,
     Details,
     GoTo(usize),
 }
 
-fn revert_button(ui: &mut Ui, i: usize, c: &TurnCard, running: bool, out: &mut Option<TurnAction>) {
+fn revert_button(ui: &mut Ui, i: usize, c: &TurnCard, running: bool, reverted: bool, out: &mut Option<TurnAction>) {
+    if reverted {
+        if ui.add_enabled(!running, egui::Button::new("Restore")).on_hover_text("Bring this request's changes back (one undoable step)").clicked() {
+            *out = Some(TurnAction::Restore(i));
+        }
+        return;
+    }
     let can = c.before.is_some() && !running;
     let tip = if c.before.is_none() { "Revert is available for requests made since this page was opened" } else { "Put the deck back as it was before this request (one undoable step)" };
     if ui.add_enabled(can, egui::Button::new("Revert")).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
@@ -272,6 +283,13 @@ fn apply(app: &mut SlideApp, action: Option<TurnAction>) {
                 && let Some(a) = app.agent.as_mut()
             {
                 a.state.items.push(ChatItem::Notice("That request can't be reverted here.".into()));
+            }
+        }
+        Some(TurnAction::Restore(i)) => {
+            if !client::restore(app, i)
+                && let Some(a) = app.agent.as_mut()
+            {
+                a.state.items.push(ChatItem::Notice("That request can't be restored here.".into()));
             }
         }
         Some(TurnAction::Details) => {
@@ -367,18 +385,19 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                 }
                 ChatItem::Turn(i) => {
                     if let Some(c) = a.state.turns.get(*i) {
+                        let reverted = client::is_reverted(app, *i);
                         egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             // Summary on its own line (it wraps in a narrow pane), buttons below.
                             ui.horizontal_wrapped(|ui| {
-                                status_chip(ui, &c.status, t);
+                                status_chip(ui, &c.status, reverted, t);
                                 ui.label(RichText::new(changes_summary(c)).font(theme::font(12.0)));
                             });
                             ui.horizontal(|ui| {
                                 if ui.add(egui::Button::new(RichText::new("Details").color(t.text_dim)).frame(false)).clicked() {
                                     action = Some(TurnAction::Details);
                                 }
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, *i, c, running, &mut action));
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, *i, c, running, reverted, &mut action));
                             });
                             if a.state.confirm_revert == Some(*i) {
                                 confirm_row(ui, *i, t, &mut action);
@@ -438,12 +457,13 @@ fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
             ui.label(RichText::new("No agent changes to this deck yet. Each request you send appears here, with what it changed and a Revert button.").color(t.text_dim));
         }
         for (i, c) in turns.iter().rev() {
+            let reverted = client::is_reverted(app, *i);
             egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    status_chip(ui, &c.status, t);
+                    status_chip(ui, &c.status, reverted, t);
                     ui.label(RichText::new(ago(c.time)).font(theme::font(11.0)).color(t.text_faint));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, *i, c, running, &mut action));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, *i, c, running, reverted, &mut action));
                 });
                 ui.label(RichText::new(&c.prompt).color(t.text));
                 if !c.slides.is_empty() || c.added > 0 || c.removed > 0 {

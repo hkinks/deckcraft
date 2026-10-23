@@ -503,3 +503,25 @@ pub fn revert(app: &mut SlideApp, i: usize, confirmed: bool) -> RevertOutcome {
     }
     if replaced { RevertOutcome::Replaced } else { RevertOutcome::Unavailable }
 }
+
+/// Turn `i`'s deck is back to how it was before the turn (it was reverted, or undone).
+pub fn is_reverted(app: &SlideApp, i: usize) -> bool {
+    let Some(card) = app.agent.as_ref().and_then(|a| a.state.turns.get(i)) else { return false };
+    let Some(before) = &card.before else { return false };
+    app.session.active().filter(|d| d.uid == card.uid).is_some_and(|d| Arc::ptr_eq(&d.doc, before))
+}
+
+/// Bring a reverted turn back: Redo when that is the next step, otherwise put the deck after the
+/// turn back as one undoable step. False when there is nothing to restore.
+pub fn restore(app: &mut SlideApp, i: usize) -> bool {
+    if busy(app) || !is_reverted(app, i) {
+        return false;
+    }
+    let Some(card) = app.agent.as_ref().and_then(|a| a.state.turns.get(i)).cloned() else { return false };
+    let Some(after) = card.after else { return false };
+    let redo_next = app.session.active().is_some_and(|d| d.history.redo.last().is_some_and(|e| Arc::ptr_eq(&e.doc, &after)));
+    if redo_next {
+        return app.run("edit.redo", json!({})).is_ok();
+    }
+    app.session.replace_doc(card.uid, after, &format!("Restore {}", card.label))
+}

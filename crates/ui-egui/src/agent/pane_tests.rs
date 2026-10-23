@@ -177,3 +177,17 @@ fn new_chat_button_clears_the_chat() {
     assert!(h.state().agent.as_ref().unwrap().state.items.is_empty());
     assert_eq!(wire.sent_of("new_conversation").len(), 1);
 }
+
+#[test]
+fn changes_tab_offers_restore_after_revert() {
+    let (mut h, _) = after_turn("add a closing slide");
+    let n = h.state().session.active().unwrap().doc.slides.len();
+    h.get_by_label("Changes (1)").click();
+    h.run_steps(2);
+    h.get_by_label("Revert").click();
+    h.run_steps(2);
+    h.get_by_label("↩ reverted");
+    h.get_by_label("Restore").click();
+    h.run_steps(2);
+    assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n);
+}
