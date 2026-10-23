@@ -2,7 +2,7 @@
 //! About window. The start screen is File › Home (`backstage.rs`).
 
 use deckcraft_color::SchemeSlot;
-use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align, Align2, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde_json::{Value, json};
 
 use crate::SlideApp;
@@ -75,34 +75,65 @@ fn title(id: &str) -> &'static str {
     }
 }
 
+/// Dialogs shown as a pane beside the slide instead of a window over it, so the person can keep
+/// working on the slides (and see them) while the dialog is open.
+pub fn is_docked(id: &str) -> bool {
+    matches!(id, "themeColors" | "themeFonts")
+}
+
+/// The docked dialog, if one is open: a pane on the right, beside the slide.
+pub fn show_docked(app: &mut SlideApp, ui: &mut Ui) {
+    if !app.dialog.as_ref().is_some_and(|d| is_docked(&d.id)) {
+        return;
+    }
+    let Some(mut d) = app.dialog.take() else { return };
+    let t = Tokens::get(ui.ctx());
+    let mut close = false;
+    let mut dismiss = false;
+    egui::Panel::right(egui::Id::new(("dialog_dock", d.id.clone())))
+        .resizable(false)
+        .exact_size(320.0)
+        .frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::same(14)))
+        .show(ui, |ui| {
+            let r = ui.max_rect().expand(14.0);
+            ui.painter().with_clip_rect(ui.ctx().content_rect()).vline(r.left(), r.y_range(), Stroke::new(1.0, t.border));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(title(&d.id)).size(15.0).strong().color(t.text));
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(r, CornerRadius::same(4), t.hover);
+                    }
+                    crate::icons::paint(ui.painter(), r.shrink(4.0), crate::icons::Icon::Close, t.text_dim, false);
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
+                    dismiss = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Close without saving").clicked();
+                });
+            });
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                close = body(app, ui, &mut d);
+            });
+        });
+    if !close && !dismiss && app.dialog.is_none() {
+        app.dialog = Some(d);
+    }
+}
+
 pub fn show(app: &mut SlideApp, ctx: &egui::Context) {
+    if app.dialog.as_ref().is_some_and(|d| is_docked(&d.id)) {
+        return;
+    }
     let Some(mut d) = app.dialog.take() else { return };
     let mut open = true;
     let mut close = false;
-    let mut window = egui::Window::new(title(&d.id))
+    let window = egui::Window::new(title(&d.id))
         .id(egui::Id::new(("dialog", d.id.clone())))
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, -40.0))
         .open(&mut open);
-    // Two columns of colour rows plus Save must fit the first frame (Theme Colors), as must Save
-    // in Theme Fonts. A later resize clips the buttons (the window size sticks) and clicks miss them.
-    if d.id == "themeColors" {
-        window = window.default_size(vec2(760.0, 420.0)).min_width(720.0).min_height(420.0);
-    } else if d.id == "themeFonts" {
-        window = window.default_size(vec2(460.0, 320.0)).min_width(420.0).min_height(300.0);
-    }
     window.show(ctx, |ui| {
-        ui.set_min_width(match d.id.as_str() {
-            "themeColors" => 700.0,
-            "themeFonts" => 400.0,
-            _ => 340.0,
-        });
-        if d.id == "themeColors" {
-            ui.set_min_height(360.0);
-        } else if d.id == "themeFonts" {
-            ui.set_min_height(280.0);
-        }
+        ui.set_min_width(340.0);
         close = body(app, ui, &mut d);
     });
     let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
@@ -539,23 +570,60 @@ fn seed_theme_colors(d: &mut Dialog) {
     d.fields.insert("seeded".into(), "1".into());
 }
 
-fn theme_color_row(ui: &mut Ui, d: &mut Dialog, slot: SchemeSlot) {
+fn theme_color_row(ui: &mut Ui, d: &mut Dialog, slot: SchemeSlot, name: &str) {
+    let t = Tokens::get(ui.ctx());
     let key = slot.xml_name();
     let mut v = d.get(key, "000000");
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(188.0, 18.0), egui::Label::new(slot.label()));
-        let fill = deckcraft_color::Rgba::from_hex(&v).map(theme::to_color32).unwrap_or_else(|| Color32::from_gray(200));
-        let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-        ui.painter().rect(rect, CornerRadius::same(2), fill, Stroke::new(1.0, Tokens::get(ui.ctx()).border), egui::StrokeKind::Inside);
-        let resp = ui.add(egui::TextEdit::singleline(&mut v).desired_width(84.0).id_salt(("theme-hex", key)));
-        let shown = v.clone();
-        resp.widget_info(move || {
-            let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("{} hex", slot.label()));
-            info.current_text_value = Some(shown.clone());
-            info
+        // The swatch opens a colour picker; the hex field takes exact values.
+        let mut rgb = deckcraft_color::Rgba::from_hex(v.trim()).map(|c| { let c = theme::to_color32(c); [c.r(), c.g(), c.b()] }).unwrap_or([200, 200, 200]);
+        let before = rgb;
+        ui.spacing_mut().interact_size = vec2(28.0, 22.0);
+        egui::color_picker::color_edit_button_srgb(ui, &mut rgb).on_hover_text(format!("Pick {}", slot.label()));
+        if rgb != before {
+            v = format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
+        }
+        ui.label(egui::RichText::new(name).color(t.text));
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            let resp = ui.add(egui::TextEdit::singleline(&mut v).desired_width(78.0).font(egui::TextStyle::Monospace).id_salt(("theme-hex", key)));
+            let shown = v.clone();
+            resp.widget_info(move || {
+                let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("{} hex", slot.label()));
+                info.current_text_value = Some(shown.clone());
+                info
+            });
         });
     });
     d.fields.insert(key.into(), v);
+}
+
+fn section_heading(ui: &mut Ui, text: &str) {
+    let t = Tokens::get(ui.ctx());
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(text.to_uppercase()).size(10.5).strong().color(t.text_faint));
+}
+
+/// What the colours look like together: a slide in each background with a title, body text and
+/// the six accents, and a link.
+fn theme_colors_preview(ui: &mut Ui, d: &mut Dialog) {
+    let t = Tokens::get(ui.ctx());
+    let mut c = |slot: SchemeSlot| deckcraft_color::Rgba::from_hex(d.get(slot.xml_name(), "").trim()).map(theme::to_color32).unwrap_or(Color32::GRAY);
+    let w = ui.available_width();
+    let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
+    let half = (r.width() - 8.0) / 2.0;
+    for (k, (bg, fg)) in [(c(SchemeSlot::Lt1), c(SchemeSlot::Dk1)), (c(SchemeSlot::Dk2), c(SchemeSlot::Lt2))].into_iter().enumerate() {
+        let card = egui::Rect::from_min_size(r.min + vec2(k as f32 * (half + 8.0), 0.0), vec2(half, r.height()));
+        ui.painter().rect(card, CornerRadius::same(6), bg, Stroke::new(1.0, t.card_border), egui::StrokeKind::Inside);
+        let p = card.min + vec2(10.0, 8.0);
+        ui.painter().text(p, Align2::LEFT_TOP, "Title", egui::FontId::proportional(15.0), fg);
+        ui.painter().text(p + vec2(0.0, 20.0), Align2::LEFT_TOP, "Body text", egui::FontId::proportional(10.5), fg);
+        ui.painter().text(p + vec2(58.0, 20.0), Align2::LEFT_TOP, "link", egui::FontId::proportional(10.5), c(SchemeSlot::Hlink));
+        let sw = (card.width() - 20.0) / 6.0;
+        for (i, slot) in [SchemeSlot::Accent1, SchemeSlot::Accent2, SchemeSlot::Accent3, SchemeSlot::Accent4, SchemeSlot::Accent5, SchemeSlot::Accent6].into_iter().enumerate() {
+            let a = egui::Rect::from_min_size(pos2(card.left() + 10.0 + i as f32 * sw, card.bottom() - 22.0), vec2(sw - 3.0, 12.0));
+            ui.painter().rect_filled(a, CornerRadius::same(2), c(slot));
+        }
+    }
 }
 
 fn theme_color_payload(d: &mut Dialog) -> Result<Value, String> {
@@ -574,37 +642,35 @@ fn theme_color_payload(d: &mut Dialog) -> Result<Value, String> {
     Ok(json!({"name": name, "colors": colors}))
 }
 
-/// Create New Theme Colors. Returns true when the dialog should close.
+/// Create New Theme Colors (a docked pane). Returns true when it should close.
 fn theme_colors_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     seed_theme_colors(d);
-    // The window keeps the height of its contents and will not grow after the first frame, so the
-    // rows stay short enough that Save is inside that rect.
-    ui.style_mut().spacing.interact_size.y = 16.0;
-    ui.style_mut().spacing.item_spacing.y = 2.0;
-    ui.style_mut().spacing.button_padding.y = 2.0;
-    let left = [SchemeSlot::Dk1, SchemeSlot::Lt1, SchemeSlot::Dk2, SchemeSlot::Lt2, SchemeSlot::Hlink, SchemeSlot::FolHlink];
-    let right = [SchemeSlot::Accent1, SchemeSlot::Accent2, SchemeSlot::Accent3, SchemeSlot::Accent4, SchemeSlot::Accent5, SchemeSlot::Accent6];
-    egui::Grid::new("theme-colors").spacing(vec2(18.0, 4.0)).show(ui, |ui| {
-        for (a, b) in left.into_iter().zip(right) {
-            theme_color_row(ui, d, a);
-            theme_color_row(ui, d, b);
-            ui.end_row();
-        }
-    });
-    ui.add_space(6.0);
+    let t = Tokens::get(ui.ctx());
+    ui.spacing_mut().item_spacing.y = 6.0;
+    theme_colors_preview(ui, d);
     let mut name = d.get("schemeName", "");
-    ui.horizontal(|ui| {
-        ui.label("Name:");
-        let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(280.0).id_salt("schemeName"));
-        let shown = name.clone();
-        resp.widget_info(move || {
-            let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Scheme name");
-            info.current_text_value = Some(shown.clone());
-            info
-        });
+    section_heading(ui, "Name");
+    let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY).id_salt("schemeName"));
+    let shown = name.clone();
+    resp.widget_info(move || {
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Scheme name");
+        info.current_text_value = Some(shown.clone());
+        info
     });
     d.fields.insert("schemeName".into(), name);
-    ui.label(egui::RichText::new("Applies to this presentation's theme colours.").size(11.0).color(Tokens::get(ui.ctx()).text_dim));
+    section_heading(ui, "Text and background");
+    for (slot, name) in [(SchemeSlot::Dk1, "Dark 1"), (SchemeSlot::Lt1, "Light 1"), (SchemeSlot::Dk2, "Dark 2"), (SchemeSlot::Lt2, "Light 2")] {
+        theme_color_row(ui, d, slot, name);
+    }
+    section_heading(ui, "Accents");
+    for (i, slot) in [SchemeSlot::Accent1, SchemeSlot::Accent2, SchemeSlot::Accent3, SchemeSlot::Accent4, SchemeSlot::Accent5, SchemeSlot::Accent6].into_iter().enumerate() {
+        theme_color_row(ui, d, slot, &format!("Accent {}", i + 1));
+    }
+    section_heading(ui, "Links");
+    theme_color_row(ui, d, SchemeSlot::Hlink, "Hyperlink");
+    theme_color_row(ui, d, SchemeSlot::FolHlink, "Followed hyperlink");
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Saving applies these colours to this presentation's theme (one undo step).").size(11.0).color(t.text_dim));
     let (ok, cancel) = buttons(ui, "Save");
     if ok {
         match theme_color_payload(d) {
@@ -646,7 +712,7 @@ fn theme_font_choices(app: &SlideApp, selected: &str) -> Vec<String> {
 }
 
 fn font_combo(ui: &mut Ui, label: &str, choices: &[String], selected: &mut String) {
-    let resp = egui::ComboBox::from_id_salt(label).selected_text(selected.as_str()).width(240.0).show_ui(ui, |ui| {
+    let resp = egui::ComboBox::from_id_salt(label).selected_text(selected.as_str()).width(ui.available_width()).show_ui(ui, |ui| {
         for face in choices {
             if ui.selectable_label(selected == face, face).clicked() {
                 *selected = face.clone();
@@ -687,35 +753,34 @@ fn theme_fonts_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     let bodies = theme_font_choices(app, &minor);
     let mut major = major;
     let mut minor = minor;
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(110.0, 18.0), egui::Label::new("Heading:"));
-        font_combo(ui, "Heading font", &headings, &mut major);
-    });
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(110.0, 18.0), egui::Label::new("Body:"));
-        font_combo(ui, "Body font", &bodies, &mut minor);
-    });
+    let t = Tokens::get(ui.ctx());
+    ui.spacing_mut().item_spacing.y = 6.0;
+    section_heading(ui, "Heading font");
+    font_combo(ui, "Heading font", &headings, &mut major);
+    section_heading(ui, "Body font");
+    font_combo(ui, "Body font", &bodies, &mut minor);
     d.fields.insert("major".into(), major.clone());
     d.fields.insert("minor".into(), minor.clone());
-    ui.add_space(4.0);
+    section_heading(ui, "Preview");
     // Theme faces are not egui families; naming an unbound family panics. The lines show the
     // chosen names at heading and body sizes.
-    ui.label(egui::RichText::new(format!("Heading sample  {major}")).size(20.0));
-    ui.label(egui::RichText::new(format!("Body sample  {minor}")).size(14.0));
-    ui.add_space(4.0);
+    egui::Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.card_border)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(egui::RichText::new(format!("Heading sample  {major}")).size(18.0).color(t.text));
+        ui.label(egui::RichText::new(format!("Body sample  {minor}")).size(13.0).color(t.text_dim));
+    });
     let mut name = d.get("schemeName", "");
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(110.0, 18.0), egui::Label::new("Name:"));
-        let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(240.0).id_salt("schemeName"));
-        let shown = name.clone();
-        resp.widget_info(move || {
-            let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Scheme name");
-            info.current_text_value = Some(shown.clone());
-            info
-        });
+    section_heading(ui, "Name");
+    let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY).id_salt("schemeName"));
+    let shown = name.clone();
+    resp.widget_info(move || {
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Scheme name");
+        info.current_text_value = Some(shown.clone());
+        info
     });
     d.fields.insert("schemeName".into(), name);
-    ui.label(egui::RichText::new("Heading and body fonts for this presentation.").size(11.0).color(Tokens::get(ui.ctx()).text_dim));
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Saving applies these fonts to this presentation's theme (one undo step).").size(11.0).color(t.text_dim));
     let (ok, cancel) = buttons(ui, "Save");
     if ok {
         match theme_font_payload(d) {

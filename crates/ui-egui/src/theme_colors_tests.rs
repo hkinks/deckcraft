@@ -52,9 +52,12 @@ fn customize_colors_opens_from_the_design_tab() {
     let _ = h.get_by_label("Hyperlink hex");
     let _ = h.get_by_label("Save");
     let _ = h.get_by_label("Cancel");
+    // Docked beside the slide, not over it: the pane sits at the window's right edge.
     let save = h.get_by_label("Save").rect();
-    let win = h.get_by_label("Create New Theme Colors").rect();
-    assert!(win.contains(save.center()), "Save {save:?} is outside the dialog window {win:?}");
+    let heading = h.get_by_label("Create New Theme Colors").rect();
+    let width = h.ctx.content_rect().width();
+    assert!(heading.left() > width - 340.0 && save.right() <= width, "heading {heading:?}, Save {save:?}");
+    assert!(save.bottom() < 1100.0, "Save is on screen: {save:?}");
     h.get_by_label("Save").click();
     h.run_steps(2);
     assert!(h.state().dialog.is_none());

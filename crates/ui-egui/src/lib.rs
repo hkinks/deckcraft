@@ -1852,6 +1852,9 @@ impl SlideApp {
         if self.backstage.is_none() && self.session.active().is_some() && agent::pane::is_open(self) {
             agent::pane::show(self, ui);
         }
+        if self.backstage.is_none() && self.session.active().is_some() {
+            dialogs::show_docked(self, ui);
+        }
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| {
             if self.backstage.is_some() {
                 // File tab: the Backstage view replaces everything below the title bar.

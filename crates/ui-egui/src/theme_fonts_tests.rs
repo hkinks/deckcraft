@@ -49,9 +49,11 @@ fn customize_fonts_opens_from_the_design_tab() {
     let _ = h.get_by_label(&format!("Body sample  {}", before.minor.latin));
     let _ = h.get_by_label("Save");
     let _ = h.get_by_label("Cancel");
+    // Docked beside the slide, not over it.
     let save = h.get_by_label("Save").rect();
-    let win = h.get_by_label("Create New Theme Fonts").rect();
-    assert!(win.contains(save.center()), "Save {save:?} is outside the dialog window {win:?}");
+    let heading = h.get_by_label("Create New Theme Fonts").rect();
+    let width = h.ctx.content_rect().width();
+    assert!(heading.left() > width - 340.0 && save.right() <= width, "heading {heading:?}, Save {save:?}");
     h.get_by_label("Save").click();
     h.run_steps(2);
     assert!(h.state().dialog.is_none());
