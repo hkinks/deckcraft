@@ -375,3 +375,30 @@ fn restore_is_not_offered_once_the_deck_moved_on() {
     assert!(!client::restore(&mut app, 0));
     assert!(Arc::ptr_eq(&doc(&app), &edited));
 }
+
+#[test]
+fn agent_works_on_its_own_slide_without_moving_the_users_view() {
+    let (mut app, ctx, wire) = setup();
+    app.run("slide.go", json!({"index": 0})).unwrap();
+    let mine = doc(&app).slides[0].id;
+    let mine_shapes = doc(&app).slides[0].shapes.len();
+    let other_shapes = doc(&app).slides[1].shapes.len();
+    client::send_prompt(&mut app, "put a box on slide 2");
+    wire.push(call("t1", "slide.go", json!({"index": 1})));
+    client::tick(&mut app, &ctx);
+    assert_eq!(app.session.active().unwrap().selection.slide, 0, "the person's view stays put");
+    // The agent's next step works where the agent is, not where the person is.
+    wire.push(call("t2", "shape.insert", json!({"preset": "rect", "rect": [10, 10, 100, 60]})));
+    client::tick(&mut app, &ctx);
+    assert_eq!(doc(&app).slides[0].shapes.len(), mine_shapes, "nothing landed on the person's slide");
+    assert_eq!(doc(&app).slides[1].shapes.len(), other_shapes + 1);
+    assert_eq!(app.session.active().unwrap().selection.slide, 0);
+    // A slide inserted in front of the person's: their view follows their slide.
+    wire.push(call("t3", "slide.new", json!({"at": 0})));
+    client::tick(&mut app, &ctx);
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    let a = app.session.active().unwrap();
+    assert_eq!(a.doc.slides.len(), 3);
+    assert_eq!(a.doc.slides[a.selection.slide].id, mine, "still on the slide they were on");
+}

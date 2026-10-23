@@ -8,7 +8,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use deckcraft_model::Presentation;
+use deckcraft_engine::Selection;
+use deckcraft_model::{Presentation, SlideId};
 use serde_json::{Value, json};
 
 use super::protocol::{ClientMsg, ContentPart, DeckContext, ProviderInfo, ServerMsg, VERSION};
@@ -71,6 +72,9 @@ pub enum TurnState {
         journal_mark: usize,
         /// How many times the user changed the deck during the turn.
         user_edits: usize,
+        /// Where the agent is working (its current slide and selection), apart from the person's
+        /// view: it is swapped in for each of the agent's steps and out again afterwards.
+        agent_view: (Selection, Option<SlideId>),
     },
 }
 
@@ -331,7 +335,27 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
             TurnState::Idle => None,
         };
         let pre = app.session.active().map(|d| d.doc.clone());
+        // The agent works from its own place in the deck; the person's view stays where it is.
+        let agent_view = match &client.state.turn {
+            TurnState::Running { agent_view, .. } => agent_view.clone(),
+            TurnState::Idle => Default::default(),
+        };
+        let mine = app.session.active_mut().map(|d| {
+            let mine = (d.selection.clone(), d.current_slide_id());
+            d.put_selection(agent_view.0, agent_view.1);
+            mine
+        });
         let (ok, content) = tools::execute_on(app, ctx, Some(uid), &name, &input, client.vision());
+        if let Some((sel, on)) = mine
+            && let Some(d) = app.session.active_mut()
+            && d.uid == uid
+        {
+            let agent_view = (d.selection.clone(), d.current_slide_id());
+            d.put_selection(sel, on);
+            if let TurnState::Running { agent_view: v, .. } = &mut client.state.turn {
+                *v = agent_view;
+            }
+        }
         // Each of the agent's steps is its own undo step, marked as the agent's.
         if let Some(pre) = &pre {
             app.session.label_undo_since(uid, pre, "AI: ");
@@ -521,6 +545,7 @@ pub fn send_prompt(app: &mut SlideApp, text: &str) {
             turn_id: None,
             journal_mark: app.session.journal.len(),
             user_edits: 0,
+            agent_view: (d.selection.clone(), d.current_slide_id()),
         };
         client.state.last_heard = crate::now_ms();
         client.state.conversation_uid = Some(uid);

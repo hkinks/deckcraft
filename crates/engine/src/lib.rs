@@ -737,6 +737,26 @@ impl Session {
     }
 }
 
+impl DocState {
+    /// The id of the current slide.
+    pub fn current_slide_id(&self) -> Option<SlideId> {
+        self.doc.slides.get(self.selection.slide).map(|s| s.id)
+    }
+
+    /// Put back a selection saved earlier, on slide `on` wherever it is now (slides may have been
+    /// added or removed since), keeping only what still exists.
+    pub fn put_selection(&mut self, mut sel: Selection, on: Option<SlideId>) {
+        if let Some(i) = on.and_then(|id| self.doc.slides.iter().position(|s| s.id == id)) {
+            sel.slide = i;
+        } else if on.is_some() {
+            // The slide is gone: stay at its place, with nothing on it selected.
+            sel = Selection { slide: sel.slide, target: sel.target, ..Selection::default() };
+        }
+        self.selection = sel;
+        clamp_selection(self);
+    }
+}
+
 /// Keep the selection pointing at things that exist.
 fn clamp_selection(st: &mut DocState) {
     let n = st.doc.slides.len();
