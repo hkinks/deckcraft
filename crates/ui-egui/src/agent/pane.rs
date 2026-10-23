@@ -88,14 +88,28 @@ fn header(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     });
 }
 
+/// A text field with a visible box (the app's theme draws bare `TextEdit`s without one).
+fn field<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let t = Tokens::get(ui.ctx());
+    egui::Frame::NONE
+        .fill(t.field_bg)
+        .stroke(egui::Stroke::new(1.0, t.border))
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, add)
+        .inner
+}
+
 fn sign_in(app: &mut SlideApp, ui: &mut Ui, error: Option<String>) {
     let Some(a) = app.agent.as_mut() else { return };
     ui.label("Sign in to the DeckCraft agent server.");
     ui.add_space(6.0);
     ui.label("Username");
-    ui.add(egui::TextEdit::singleline(&mut a.state.login_user).desired_width(f32::INFINITY));
+    field(ui, |ui| ui.add(egui::TextEdit::singleline(&mut a.state.login_user).frame(egui::Frame::NONE).desired_width(f32::INFINITY)));
     ui.label("Password");
-    let pw = ui.add(egui::TextEdit::singleline(&mut a.state.login_password).password(true).desired_width(f32::INFINITY));
+    let pw = field(ui, |ui| {
+        ui.add(egui::TextEdit::singleline(&mut a.state.login_password).password(true).frame(egui::Frame::NONE).desired_width(f32::INFINITY))
+    });
     if let Some(e) = error {
         ui.colored_label(egui::Color32::from_rgb(0xC4, 0x2B, 0x1C), e);
     }
@@ -197,12 +211,15 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     }
     ui.separator();
     let Some(a) = app.agent.as_mut() else { return };
-    let edit = ui.add(
-        egui::TextEdit::multiline(&mut a.state.input)
-            .hint_text("Describe a change… (Enter to send, Shift+Enter for a new line)")
-            .desired_rows(3)
-            .desired_width(f32::INFINITY),
-    );
+    let edit = field(ui, |ui| {
+        ui.add(
+            egui::TextEdit::multiline(&mut a.state.input)
+                .hint_text("Describe a change… (Enter to send, Shift+Enter for a new line)")
+                .frame(egui::Frame::NONE)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY),
+        )
+    });
     let enter = edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
     if enter && a.state.input.ends_with('\n') {
         a.state.input.pop();

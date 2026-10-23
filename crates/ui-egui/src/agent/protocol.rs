@@ -34,6 +34,9 @@ pub enum ClientMsg {
     UserMessage { v: u32, text: String, deck: DeckContext, provider: Option<String> },
     ToolResult { v: u32, id: String, ok: bool, content: Vec<ContentPart> },
     Stop { v: u32 },
+    /// The editor tab was hidden or shown: a hidden tab draws no frames and runs no tool calls,
+    /// so the server pauses its tool timeout.
+    Visibility { v: u32, hidden: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

@@ -38,6 +38,7 @@ impl WebAgentTransport {
     pub fn new(ctx: egui::Context) -> Self {
         let t = Self { inner: Rc::new(RefCell::new(Inner { status: Some(LinkStatus::Connecting), ..Default::default() })), ctx };
         t.check_session();
+        t.watch_visibility();
         t
     }
 
@@ -90,6 +91,7 @@ impl WebAgentTransport {
         let on_open = Closure::<dyn FnMut(JsValue)>::new(move |_| {
             me.inner.borrow_mut().was_connected = true;
             me.set(LinkStatus::Connected);
+            me.send_visibility();
         });
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
         callbacks.push(on_open);
@@ -133,6 +135,22 @@ impl WebAgentTransport {
         }
         inner.ws = Some(ws);
         inner.callbacks = callbacks;
+    }
+
+    fn send_visibility(&self) {
+        let hidden = web_sys::window().and_then(|w| w.document()).is_some_and(|d| d.hidden());
+        let mut me = self.clone();
+        me.send(&ClientMsg::Visibility { v: protocol::VERSION, hidden });
+    }
+
+    /// Tell the server whenever the tab is hidden or shown, for as long as the page lives.
+    fn watch_visibility(&self) {
+        let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+        let me = self.clone();
+        let cb = Closure::<dyn FnMut(JsValue)>::new(move |_| me.send_visibility());
+        if doc.add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref()).is_ok() {
+            cb.forget();
+        }
     }
 
     fn reconnect_later(&self) {

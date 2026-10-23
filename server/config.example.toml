@@ -1,0 +1,35 @@
+# DeckCraft agent server configuration. Copy to config.toml.
+# ${VAR} is replaced by the environment variable VAR. These environment variables override the
+# file: LITELLM_BASE_URL, LITELLM_API_KEY (anthropic providers), AGENT_DEFAULT_PROVIDER,
+# DECKCRAFT_SITE_DIR, DECKCRAFT_DB, SESSION_SECRET.
+
+default_provider = "qwen-local"
+# The built web editor (trunk build --release in apps/deckcraft-web).
+site_dir = "../dist/web"
+db_path = "data/deckcraft.db"
+# Set SESSION_SECRET in production; a random one is generated per start otherwise
+# (everyone is signed out on restart).
+session_secret = "${SESSION_SECRET}"
+# true when served over HTTPS.
+secure_cookie = false
+
+[providers.claude]
+kind = "anthropic"
+base_url = "${LITELLM_BASE_URL}"
+api_key = "${LITELLM_API_KEY}"
+model = "claude-sonnet-5-5"
+vision = true
+effort = "medium"
+
+[providers.qwen-local]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:8080/v1"   # llama-swap
+api_key = ""
+model = "qwen3.8-27b-q5"
+vision = false
+
+[limits]
+turns_per_minute = 6
+max_tool_calls_per_turn = 60
+max_turn_seconds = 300
+tool_call_timeout_seconds = 30

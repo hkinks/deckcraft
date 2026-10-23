@@ -39,6 +39,10 @@ class RateLimiter:
 
 
 class Connection:
+    # Tool calls time out only while the editor tab is visible: a hidden tab draws no frames,
+    # so it runs nothing until it is shown again (bounded by the turn's time limit).
+    manages_timeout = True
+
     def __init__(self, ws: WebSocket, user: User, settings: Settings, store: Store, providers: dict, limiter: RateLimiter):
         self.ws = ws
         self.user = user
@@ -54,6 +58,7 @@ class Connection:
         self.stop = asyncio.Event()
         self.pending: dict[str, asyncio.Future] = {}
         self.send_lock = asyncio.Lock()
+        self.hidden = False
 
     async def send(self, msg: dict) -> None:
         async with self.send_lock:
@@ -68,7 +73,20 @@ class Connection:
         self.pending[id] = fut
         try:
             await self.send({"type": "tool_call", "id": id, "name": name, "input": input})
-            return await fut
+            limits = self.settings.limits
+            visible_left = limits.tool_call_timeout_seconds
+            hidden_left = limits.max_turn_seconds
+            step = min(0.25, visible_left)
+            while True:
+                try:
+                    return await asyncio.wait_for(asyncio.shield(fut), step)
+                except asyncio.TimeoutError:
+                    if self.hidden:
+                        hidden_left -= step
+                    else:
+                        visible_left -= step
+                    if visible_left <= 0 or hidden_left <= 0:
+                        raise
         finally:
             self.pending.pop(id, None)
 
@@ -97,6 +115,8 @@ class Connection:
                 fut.set_result((bool(msg.get("ok")), parts))
         elif t == "stop":
             self.stop.set()
+        elif t == "visibility":
+            self.hidden = bool(msg.get("hidden"))
         else:
             await self.error("bad_message", f"unknown message type {t!r}")
 

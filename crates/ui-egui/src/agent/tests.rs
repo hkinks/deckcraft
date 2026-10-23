@@ -103,3 +103,10 @@ fn client_messages_encode_with_type_tags() {
     assert_eq!(v["type"], "tool_result");
     assert_eq!(v["content"][0]["type"], "text");
 }
+
+#[test]
+fn visibility_message_encodes() {
+    let v: serde_json::Value = serde_json::from_str(&protocol::encode(&protocol::ClientMsg::Visibility { v: 1, hidden: true })).unwrap();
+    assert_eq!(v["type"], "visibility");
+    assert_eq!(v["hidden"], true);
+}

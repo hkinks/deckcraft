@@ -71,8 +71,8 @@ async def test_tool_calls_round_trip_and_feed_next_call():
     r, _, history = await collect(p, b)
     assert r.status == "ok"
     assert [c[0] for c in b.calls] == ["run_command", "inspect_slide"]
-    assert r.actions == ["slide.new", "inspect_slide"]
-    assert r.slides == [1]
+    assert r.actions == ["slide.new"]  # inspect_slide only looked
+    assert r.slides == []
     second_call_history = p.calls[1]
     results = second_call_history[-1]
     assert [x.tool_use_id for x in results.results] == ["t1", "t2"] and all(x.ok for x in results.results)
@@ -135,3 +135,18 @@ async def test_batch_actions_are_listed_per_command():
 
     r = await run_turn(p, "s", [UserMsg("x")], tools, FakeBrowser(), Limits(), on_delta, asyncio.Event())
     assert r.actions == ["slide.new", "format.bold"]
+
+
+async def test_read_only_tools_are_not_counted_as_changes():
+    p = ScriptedProvider([("", [ToolUse("t1", "inspect_slide", {"slide": 0}), ToolUse("t2", "run_command", {"command": "format.bold"})]), ("", [])])
+    r, _, _ = await collect(p, FakeBrowser())
+    assert r.actions == ["format.bold"]
+
+
+async def test_browser_that_manages_timeouts_is_not_cut_off_by_the_loop():
+    class Patient(FakeBrowser):
+        manages_timeout = True
+
+    p = ScriptedProvider([("", [ToolUse("t1", "run_command", {"command": "slide.new"})]), ("ok", [])])
+    r, _, _ = await collect(p, Patient(delay=0.2), limits=Limits(tool_call_timeout_seconds=0.05))
+    assert r.status == "ok"

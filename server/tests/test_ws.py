@@ -172,3 +172,36 @@ def test_index_served_when_site_dir_set(tmp_path, env):
                                         "site_dir": str(site), "session_secret": "x"})
     c = TestClient(create_app(settings, store))
     assert "deckcraft_canvas" in c.get("/").text
+
+
+def test_hidden_tab_pauses_the_tool_timeout(env):
+    client, script, _ = env
+    client.app.state.settings.limits.tool_call_timeout_seconds = 0.3
+    script += [("", [ToolUse("t1", "run_command", {"command": "slide.new"})]), ("done", [])]
+    login(client)
+    import time
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "visibility", "hidden": True})
+        ws.send_json({"v": 1, "type": "user_message", "text": "go", "deck": {"deck_key": "d"}})
+        while (m := ws.receive_json())["type"] != "tool_call":
+            pass
+        time.sleep(1.0)  # longer than the timeout, but the tab is hidden
+        ws.send_json({"v": 1, "type": "visibility", "hidden": False})
+        ws.send_json({"v": 1, "type": "tool_result", "id": m["id"], "ok": True, "content": []})
+        while (m := ws.receive_json())["type"] != "turn_end":
+            pass
+        assert m["status"] == "ok"
+
+
+def test_visible_tab_still_times_out(env):
+    client, script, _ = env
+    client.app.state.settings.limits.tool_call_timeout_seconds = 0.3
+    script += [("", [ToolUse("t1", "run_command", {"command": "slide.new"})]), ("done", [])]
+    login(client)
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "user_message", "text": "go", "deck": {"deck_key": "d"}})
+        while (m := ws.receive_json())["type"] != "turn_end":
+            pass
+        assert m["status"] == "error"

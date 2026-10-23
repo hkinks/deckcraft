@@ -30,7 +30,13 @@ class TurnResult:
     error: str = ""
 
 
+# Tools that only look at the deck (or move the view); not counted as changes.
+READ_ONLY = {"list_commands", "inspect_document", "inspect_slide", "render_slide", "get_deck_json", "go_to_slide", "select"}
+
+
 def describe(name: str, input: dict) -> list[str]:
+    if name in READ_ONLY:
+        return []
     if name == "run_command":
         return [str(input.get("command", "run_command"))]
     if name == "batch":
@@ -122,8 +128,10 @@ async def run_turn(
                 results.results.append(_err(tu.id, "tool input was not valid JSON; send a JSON object matching the tool's schema"))
                 continue
             calls += 1
+            # A browser link that knows when its tab is hidden applies the tool timeout itself.
+            timeout = None if getattr(browser, "manages_timeout", False) else limits.tool_call_timeout_seconds
             try:
-                ok, parts = await asyncio.wait_for(browser.call_tool(tu.id, tu.name, tu.input), limits.tool_call_timeout_seconds)
+                ok, parts = await asyncio.wait_for(browser.call_tool(tu.id, tu.name, tu.input), timeout)
             except asyncio.TimeoutError:
                 halt = "error"
                 result.error = f"the editor did not answer {tu.name} (timed out after {limits.tool_call_timeout_seconds:g} s)"
@@ -135,8 +143,8 @@ async def run_turn(
                 results.results.append(_err(tu.id, result.error))
                 continue
             results.results.append(ToolResult(tu.id, ok, parts))
-            if ok:
-                result.actions += describe(tu.name, tu.input)
+            if ok and (changes := describe(tu.name, tu.input)):
+                result.actions += changes
                 if (s := slide_of(tu.input)) is not None:
                     slides.add(s)
         history.append(results)

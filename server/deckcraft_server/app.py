@@ -16,6 +16,7 @@ from .ws import RateLimiter, agent_socket
 
 def create_app(settings: Settings, store: Store, provider_factory: Callable[[ProviderCfg], object] | None = None) -> FastAPI:
     app = FastAPI(title="DeckCraft agent server", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.settings = settings
     auth = LocalAuth(store, settings.session_secret, secure_cookie=settings.secure_cookie)
     factory = provider_factory or build_provider
     providers = {k: factory(v) for k, v in settings.providers.items()}
