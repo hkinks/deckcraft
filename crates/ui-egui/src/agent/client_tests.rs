@@ -176,3 +176,94 @@ fn stop_sends_stop() {
     client::stop(&mut app);
     assert_eq!(wire.sent_of("stop").len(), 1);
 }
+
+const PNG_1PX: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+#[test]
+fn revert_of_an_older_turn_keeps_picture_bytes() {
+    let (mut app, ctx, wire) = setup();
+    app.run("insert.picture", json!({"data": PNG_1PX, "name": "dot.png"})).unwrap();
+    let bytes = doc(&app).media[0].data.len();
+    client::send_prompt(&mut app, "drop the media");
+    wire.push(ServerMsg::ToolCall { id: "t1".into(), name: "patch_deck_json".into(), input: json!({"patch": [{"op": "replace", "path": "/media", "value": []}]}) });
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    app.run("slide.new", json!({})).unwrap();
+    assert_eq!(client::revert(&mut app, 0, true), RevertOutcome::Replaced);
+    assert_eq!(doc(&app).media.first().map(|m| m.data.len()), Some(bytes));
+}
+
+fn turn_start(id: &str) -> ServerMsg {
+    ServerMsg::TurnStart { turn_id: id.into() }
+}
+
+#[test]
+fn revert_survives_switching_decks_and_back() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "x");
+    wire.push(turn_start("turn-1"));
+    wire.push(call("t1", "slide.new", json!({})));
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    let first = app.session.active_index().unwrap();
+    app.run("file.new", json!({})).unwrap();
+    client::tick(&mut app, &ctx);
+    app.session.set_active(first);
+    client::tick(&mut app, &ctx);
+    wire.push(ServerMsg::History {
+        conversation_id: Some("c".into()),
+        items: vec![
+            super::protocol::HistoryItem { role: "user".into(), text: "x".into(), turn: None },
+            super::protocol::HistoryItem { role: "assistant".into(), text: "ok".into(), turn: Some(super::protocol::TurnInfo { turn_id: "turn-1".into(), actions: vec!["slide.new".into()], slides: vec![], status: "ok".into() }) },
+        ],
+    });
+    client::tick(&mut app, &ctx);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+}
+
+#[test]
+fn revert_survives_a_reconnect() {
+    let (mut app, ctx, wire) = setup();
+    let before = doc(&app);
+    client::send_prompt(&mut app, "x");
+    wire.push(turn_start("turn-9"));
+    wire.push(call("t1", "slide.new", json!({})));
+    client::tick(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    *wire.status.borrow_mut() = Some(LinkStatus::Failed("disconnected".into()));
+    client::tick(&mut app, &ctx);
+    *wire.status.borrow_mut() = Some(LinkStatus::Connected);
+    wire.push(ServerMsg::Ready { user: "ana".into(), providers: vec![ProviderInfo { id: "q".into(), model: "m".into(), vision: false }], default_provider: "q".into() });
+    client::tick(&mut app, &ctx);
+    wire.push(ServerMsg::History {
+        conversation_id: Some("c".into()),
+        items: vec![
+            super::protocol::HistoryItem { role: "user".into(), text: "x".into(), turn: None },
+            super::protocol::HistoryItem { role: "assistant".into(), text: "(interrupted)".into(), turn: Some(super::protocol::TurnInfo { turn_id: "turn-9".into(), actions: vec![], slides: vec![], status: "interrupted".into() }) },
+        ],
+    });
+    client::tick(&mut app, &ctx);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+    assert!(Arc::ptr_eq(&doc(&app), &before));
+}
+
+#[test]
+fn stop_without_an_answer_unlocks_after_the_grace_period() {
+    let (mut app, ctx, _wire) = setup();
+    app.agent.as_mut().unwrap().state.stop_grace_ms = 0.0;
+    client::send_prompt(&mut app, "hang");
+    client::stop(&mut app);
+    client::tick(&mut app, &ctx);
+    assert!(!client::busy(&app));
+}
+
+#[test]
+fn new_conversation_clears_the_chat_and_tells_the_server() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "x");
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    client::new_conversation(&mut app);
+    assert!(app.agent.as_ref().unwrap().state.items.is_empty());
+    assert_eq!(wire.sent_of("new_conversation").len(), 1);
+}

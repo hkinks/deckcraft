@@ -58,3 +58,17 @@ def test_logout_clears_session(client):
 def test_tampered_cookie_is_rejected(client):
     client.cookies.set("dc_session", "ana.forged.sig")
     assert client.get("/api/me").status_code == 401
+
+
+def test_rotating_usernames_is_rate_limited_per_ip(client):
+    codes = [client.post("/api/login", json={"username": f"u{i}", "password": "x"}).status_code for i in range(25)]
+    assert 429 in codes
+
+
+def test_failure_records_stay_bounded(tmp_path):
+    from deckcraft_server.auth import local
+
+    auth = LocalAuth(Store(tmp_path / "b.db"), secret="s")
+    for i in range(local.MAX_TRACKED * 3):
+        auth._record_failure(("user%d" % i, "1.2.3.%d" % (i % 250)))
+    assert len(auth.failures) <= local.MAX_TRACKED

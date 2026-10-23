@@ -205,3 +205,57 @@ def test_visible_tab_still_times_out(env):
         while (m := ws.receive_json())["type"] != "turn_end":
             pass
         assert m["status"] == "error"
+
+
+def test_disconnect_mid_turn_is_stored_as_interrupted(env):
+    client, script, store = env
+    script += [("", [ToolUse("t1", "run_command", {"command": "slide.new"})]), ("x", [])]
+    import time
+
+    with client:  # one event loop for the socket and the server's cleanup after it closes
+        login(client)
+        with client.websocket_connect("/ws/agent") as ws:
+            hello(ws)
+            ws.send_json({"v": 1, "type": "user_message", "text": "go", "deck": {"deck_key": "d"}})
+            started = None
+            while (m := ws.receive_json())["type"] != "tool_call":
+                if m["type"] == "turn_start":
+                    started = m["turn_id"]
+            assert started
+        turns = []
+        for _ in range(50):
+            convs = asyncio.run(store.list_conversations(1, "d"))
+            turns = asyncio.run(store.turns(convs[0]["id"])) if convs else []
+            if turns and turns[0]["status"] == "interrupted":
+                break
+            time.sleep(0.05)
+    assert turns[0]["status"] == "interrupted" and turns[0]["id"] == started
+    msgs = asyncio.run(store.messages(convs[0]["id"]))
+    assert msgs[-1]["role"] == "assistant" and msgs[-1]["content"]["turn_id"] == started
+
+
+def test_new_conversation_starts_fresh(env):
+    client, script, _ = env
+    script += [("first", []), ("second", [])]
+    login(client)
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "user_message", "text": "a", "deck": {"deck_key": "d"}})
+        first = ws.receive_json()["id"]
+        while ws.receive_json()["type"] != "turn_end":
+            pass
+        ws.send_json({"v": 1, "type": "new_conversation"})
+        ws.send_json({"v": 1, "type": "user_message", "text": "b", "deck": {"deck_key": "d"}})
+        second = ws.receive_json()
+        assert second["type"] == "conversation" and second["id"] != first
+        while ws.receive_json()["type"] != "turn_end":
+            pass
+
+
+def test_bad_provider_type_is_an_error_not_a_dropped_connection(env):
+    client, _, _ = env
+    login(client)
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "user_message", "text": "hi", "deck": {"deck_key": "d"}, "provider": ["x"]})
+        assert ws.receive_json()["code"] == "bad_provider"

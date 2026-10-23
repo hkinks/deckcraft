@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol
 
 from ..config import Limits
-from ..providers.base import Done, HistoryItem, LLMProvider, TextDelta, ToolResult, ToolResults
+from ..providers.base import AssistantMsg, Done, HistoryItem, LLMProvider, TextDelta, ToolResult, ToolResults, UserMsg
 
 
 class BrowserLink(Protocol):
@@ -54,6 +54,35 @@ def slide_of(input: dict) -> int | None:
     return None
 
 
+def flatten_history(history: list[HistoryItem], max_chars: int = 60_000) -> list[HistoryItem]:
+    """Earlier turns as plain text for the next turn: each user message and the agent's final
+    reply, without tool calls, tool results or thinking. Old thinking blocks are never replayed
+    (so no history is edited under them) and the context stays small. The oldest turns are
+    dropped first once the text passes `max_chars`."""
+    turns: list[list[HistoryItem]] = []
+    for h in history:
+        if isinstance(h, UserMsg):
+            turns.append([UserMsg(h.text)])
+        elif isinstance(h, AssistantMsg) and turns and h.text:
+            last = turns[-1]
+            if len(last) == 2:
+                last[1] = AssistantMsg(last[1].text + "\n\n" + h.text, [], None, "history")
+            else:
+                last.append(AssistantMsg(h.text, [], None, "history"))
+    for t in turns:
+        if len(t) == 1:
+            t.append(AssistantMsg("(no reply)", [], None, "history"))
+    kept: list[list[HistoryItem]] = []
+    total = 0
+    for t in reversed(turns):
+        size = sum(len(x.text) for x in t)
+        if total + size > max_chars:
+            break
+        kept.append(t)
+        total += size
+    return [x for t in reversed(kept) for x in t]
+
+
 def _err(id: str, text: str) -> ToolResult:
     return ToolResult(id, False, [{"type": "text", "text": text}])
 
@@ -79,12 +108,33 @@ async def run_turn(
             result.status = "stopped"
             break
         done: Done | None = None
-        try:
+
+        async def consume() -> Done | None:
+            last = None
             async for ev in provider.stream(system, history, tools):
                 if isinstance(ev, TextDelta):
                     await on_delta(ev.text)
                 elif isinstance(ev, Done):
-                    done = ev
+                    last = ev
+            return last
+
+        # The model call races Stop and the turn's time limit: a hung provider can't hold the
+        # editor locked.
+        call = asyncio.create_task(consume())
+        stopped = asyncio.create_task(stop.wait())
+        try:
+            finished, _ = await asyncio.wait({call, stopped}, timeout=max(0.0, deadline - time.monotonic()), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopped.cancel()
+        if call not in finished:
+            call.cancel()
+            if stop.is_set():
+                result.status = "stopped"
+            else:
+                result.status, result.error = "limit", f"turn time limit ({limits.max_turn_seconds:g} s) reached"
+            break
+        try:
+            done = call.result()
         except asyncio.CancelledError:
             raise
         except Exception as e:  # provider/network failure after the SDK's own retries

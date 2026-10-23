@@ -150,3 +150,48 @@ async def test_browser_that_manages_timeouts_is_not_cut_off_by_the_loop():
     p = ScriptedProvider([("", [ToolUse("t1", "run_command", {"command": "slide.new"})]), ("ok", [])])
     r, _, _ = await collect(p, Patient(delay=0.2), limits=Limits(tool_call_timeout_seconds=0.05))
     assert r.status == "ok"
+
+
+class Hanging:
+    kind = "x"
+    vision = False
+
+    async def stream(self, system, history, tools):
+        await asyncio.sleep(3600)
+        yield  # pragma: no cover
+
+
+async def test_stop_interrupts_a_hanging_model_call():
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.1, stop.set)
+    r, _, _ = await asyncio.wait_for(collect(Hanging(), FakeBrowser(), stop=stop), 2)
+    assert r.status == "stopped"
+
+
+async def test_turn_time_limit_covers_a_hanging_model_call():
+    r, _, _ = await asyncio.wait_for(collect(Hanging(), FakeBrowser(), limits=Limits(max_turn_seconds=0.2)), 2)
+    assert r.status == "limit"
+
+
+def test_flatten_keeps_only_text_of_earlier_turns():
+    from deckcraft_server.agent.loop import flatten_history
+    from deckcraft_server.providers.base import ToolResult, ToolResults
+
+    h = [UserMsg("one"), AssistantMsg("", [ToolUse("t", "get_deck_json", {})], [{"type": "thinking"}], "anthropic"),
+         ToolResults([ToolResult("t", True, [{"type": "text", "text": "x" * 100000}])]),
+         AssistantMsg("did one", [], [{"type": "thinking"}], "anthropic"), UserMsg("two"), AssistantMsg("did two", [], None, "x")]
+    flat = flatten_history(h, max_chars=1000)
+    assert [type(x).__name__ for x in flat] == ["UserMsg", "AssistantMsg", "UserMsg", "AssistantMsg"]
+    assert flat[1].text == "did one" and flat[1].raw is None and flat[1].tool_uses == []
+
+
+def test_flatten_drops_oldest_turns_beyond_the_budget():
+    from deckcraft_server.agent.loop import flatten_history
+
+    h = []
+    for i in range(10):
+        h += [UserMsg(f"q{i} " + "y" * 300), AssistantMsg(f"a{i}", [], None, "x")]
+    flat = flatten_history(h, max_chars=1000)
+    assert flat[0].text.startswith("q") and flat[-1].text == "a9"
+    assert sum(len(getattr(x, "text", "")) for x in flat) <= 1000
+    assert isinstance(flat[0], UserMsg)

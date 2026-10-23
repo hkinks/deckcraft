@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from .agent.loop import run_turn
+from .agent.loop import flatten_history, run_turn
 from .agent.prompt import SYSTEM_PROMPT, editor_context
 from .config import Settings
 from .providers.base import AssistantMsg, HistoryItem, UserMsg
@@ -59,10 +59,16 @@ class Connection:
         self.pending: dict[str, asyncio.Future] = {}
         self.send_lock = asyncio.Lock()
         self.hidden = False
+        self.closed = False
 
     async def send(self, msg: dict) -> None:
+        if self.closed:
+            return
         async with self.send_lock:
-            await self.ws.send_text(json.dumps(msg))
+            try:
+                await self.ws.send_text(json.dumps(msg))
+            except (WebSocketDisconnect, RuntimeError, OSError):
+                self.closed = True  # the editor went away; the turn still finishes and is stored
 
     async def error(self, code: str, message: str) -> None:
         await self.send({"type": "error", "code": code, "message": message})
@@ -115,6 +121,10 @@ class Connection:
                 fut.set_result((bool(msg.get("ok")), parts))
         elif t == "stop":
             self.stop.set()
+        elif t == "new_conversation":
+            if self.turn_task and not self.turn_task.done():
+                return await self.error("busy", "a turn is running")
+            self.conversation_id, self.history = None, []
         elif t == "visibility":
             self.hidden = bool(msg.get("hidden"))
         else:
@@ -155,7 +165,7 @@ class Connection:
         if not isinstance(text, str) or not text.strip():
             return await self.error("bad_message", "empty message")
         provider_id = msg.get("provider") or self.settings.default_provider
-        if provider_id not in self.settings.providers:
+        if not isinstance(provider_id, str) or provider_id not in self.settings.providers:
             return await self.error("bad_provider", f"unknown provider {provider_id!r}")
         if not self.limiter.allow(self.user.id, self.settings.limits.turns_per_minute):
             return await self.error("rate_limited", "too many requests, wait a moment")
@@ -176,7 +186,9 @@ class Connection:
         cid = self.conversation_id or ""
         await self.store.append_message(cid, "user", {"text": text})
         tid = await self.store.start_turn(cid, text, provider_id)
+        await self.send({"type": "turn_start", "turn_id": tid})
         ctx = editor_context(deck)
+        self.history = flatten_history(self.history)
         self.history.append(UserMsg(f"{ctx}\n\n{text}" if ctx else text))
         provider = self.providers[provider_id]
         status, result = "error", None
@@ -189,6 +201,7 @@ class Connection:
             if result.status == "error":
                 await self.error("turn_failed", result.error)
         except asyncio.CancelledError:
+            await self.store.append_message(cid, "assistant", {"text": "(interrupted)", "turn_id": tid})
             await self.store.finish_turn(tid, [], [], "interrupted", {})
             raise
         except Exception as e:  # never let a turn failure kill the connection
@@ -238,8 +251,15 @@ async def agent_socket(ws: WebSocket, auth, settings: Settings, store: Store, pr
     except WebSocketDisconnect:
         pass
     finally:
+        conn.closed = True
+        if conn.turn_task and not conn.turn_task.done():
+            conn.turn_task.cancel()
+            # Let it record the turn as interrupted; shielded so that cancelling this handler
+            # (server shutdown, test clients) doesn't cut the turn's own cleanup short.
+            try:
+                await asyncio.wait_for(asyncio.shield(asyncio.gather(conn.turn_task, return_exceptions=True)), 5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         for fut in conn.pending.values():
             if not fut.done():
                 fut.set_exception(ConnectionError("editor disconnected"))
-        if conn.turn_task and not conn.turn_task.done():
-            conn.turn_task.cancel()

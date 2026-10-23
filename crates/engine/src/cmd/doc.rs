@@ -17,6 +17,9 @@ const MAX_MAX_BYTES: u64 = 4 << 20;
 /// Largest document JSON a patch or replace may produce.
 const MAX_DOC_BYTES: usize = 64 << 20;
 const MAX_PATCH_OPS: usize = 10_000;
+/// Deepest JSON a patch may insert, and the most segments a path may have (the model is far
+/// shallower; deeper input would overflow the stack in recursive (de)serialization).
+const MAX_DEPTH: usize = 64;
 const MAX_SLIDES: usize = 10_000;
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -74,8 +77,15 @@ fn doc_patch(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("doc.patch", format!("at most {MAX_PATCH_OPS} operations")));
     }
     let mut v = doc_value(s)?;
+    // Bounded as it goes: a few copies of the whole deck must not exhaust memory before the
+    // final size check.
+    let mut size = serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(usize::MAX);
     for (i, op) in ops.iter().enumerate() {
-        apply_op(&mut v, op).map_err(|e| bad("doc.patch", format!("operation {i}: {e}")))?;
+        let added = apply_op(&mut v, op).map_err(|e| bad("doc.patch", format!("operation {i}: {e}")))?;
+        size = size.saturating_add(added);
+        if size > MAX_DOC_BYTES {
+            return Err(bad("doc.patch", format!("operation {i}: the document would be too large")));
+        }
     }
     let slides = replace_with(s, v, "doc.patch")?;
     Ok(json!({"ok": true, "slides": slides}))
@@ -125,6 +135,33 @@ fn replace_with(s: &mut Session, v: Value, cmd: &str) -> Result<usize> {
 
 fn unescape(token: &str) -> String {
     token.replace("~1", "/").replace("~0", "~")
+}
+
+/// Nesting depth of `v`, without recursion (it may be hostile).
+fn depth(v: &Value) -> usize {
+    let mut max = 0;
+    let mut stack = vec![(v, 1usize)];
+    while let Some((v, d)) = stack.pop() {
+        max = max.max(d);
+        if d > MAX_DEPTH {
+            return d;
+        }
+        match v {
+            Value::Array(a) => stack.extend(a.iter().map(|x| (x, d + 1))),
+            Value::Object(m) => stack.extend(m.values().map(|x| (x, d + 1))),
+            _ => {}
+        }
+    }
+    max
+}
+
+/// A value to insert at `path`: not too deep, alone or where it lands; its size in bytes.
+fn admit(path: &str, v: &Value) -> std::result::Result<usize, String> {
+    let at = path.matches('/').count();
+    if at.saturating_add(depth(v)) > MAX_DEPTH {
+        return Err(format!("too deeply nested (at most {MAX_DEPTH} levels)"));
+    }
+    Ok(serde_json::to_vec(v).map(|b| b.len()).unwrap_or(usize::MAX))
 }
 
 fn split(path: &str) -> std::result::Result<(String, String), String> {
@@ -185,22 +222,32 @@ fn remove(root: &mut Value, path: &str) -> std::result::Result<Value, String> {
     }
 }
 
-fn apply_op(root: &mut Value, op: &Value) -> std::result::Result<(), String> {
+/// Apply one operation; returns the bytes it added (for the running size bound).
+fn apply_op(root: &mut Value, op: &Value) -> std::result::Result<usize, String> {
     let name = op.get("op").and_then(Value::as_str).ok_or("missing `op`")?;
     let path = op.get("path").and_then(Value::as_str).ok_or("missing `path`")?;
     let value = || op.get("value").cloned().ok_or_else(|| "missing `value`".to_string());
-    let from = || op.get("from").and_then(Value::as_str).ok_or_else(|| "missing `from`".to_string());
+    let from = || match op.get("from").and_then(Value::as_str) {
+        Some("") => Err("`from` can't be the whole document".to_string()),
+        Some(f) => Ok(f),
+        None => Err("missing `from`".to_string()),
+    };
     match name {
-        "add" => add(root, path, value()?),
-        "remove" => remove(root, path).map(|_| ()),
+        "add" => {
+            let v = value()?;
+            let n = admit(path, &v)?;
+            add(root, path, v).map(|_| n)
+        }
+        "remove" => remove(root, path).map(|_| 0),
         "replace" => {
             let v = value()?;
             if path.is_empty() {
                 return Err("replacing the whole document: use doc.replace".into());
             }
+            let n = admit(path, &v)?;
             let slot = root.pointer_mut(path).ok_or_else(|| format!("nothing at {path:?}"))?;
             *slot = v;
-            Ok(())
+            Ok(n)
         }
         "move" => {
             let from = from()?;
@@ -208,16 +255,18 @@ fn apply_op(root: &mut Value, op: &Value) -> std::result::Result<(), String> {
                 return Err("can't move a value into itself".into());
             }
             let v = remove(root, from)?;
-            add(root, path, v)
+            admit(path, &v)?;
+            add(root, path, v).map(|_| 0)
         }
         "copy" => {
             let v = root.pointer(from()?).cloned().ok_or("nothing at `from`")?;
-            add(root, path, v)
+            let n = admit(path, &v)?;
+            add(root, path, v).map(|_| n)
         }
         "test" => {
             let expected = value()?;
             match root.pointer(path) {
-                Some(actual) if *actual == expected => Ok(()),
+                Some(actual) if *actual == expected => Ok(0),
                 Some(actual) => Err(format!("test failed at {path:?}: found {actual}")),
                 None => Err(format!("test failed: nothing at {path:?}")),
             }
@@ -340,6 +389,37 @@ mod tests {
         assert_eq!(s.active().unwrap().history.undo.last().unwrap().label, "Replace Document");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.active().unwrap().doc.slides.len(), 3);
+    }
+
+    #[test]
+    fn doc_patch_refuses_doubling_the_document() {
+        let mut s = Session::with_new();
+        let before = s.active().unwrap().doc.clone();
+        let ops: Vec<_> = (0..40).map(|i| json!({"op": "copy", "from": "", "path": format!("/x{i}")})).collect();
+        assert!(s.execute("doc.patch", &json!({"patch": ops})).is_err());
+        assert!(Arc::ptr_eq(&s.active().unwrap().doc, &before));
+        let big = "x".repeat(1 << 20);
+        let ops: Vec<_> = (0..200).map(|i| json!({"op": "add", "path": format!("/y{i}"), "value": big})).collect();
+        assert!(s.execute("doc.patch", &json!({"patch": ops})).is_err());
+        assert!(Arc::ptr_eq(&s.active().unwrap().doc, &before));
+    }
+
+    #[test]
+    fn doc_patch_refuses_deep_values() {
+        let mut s = Session::with_new();
+        let mut v = json!(1);
+        for _ in 0..100 {
+            v = json!([v]);
+        }
+        assert!(s.execute("doc.patch", &json!({"patch": [{"op": "add", "path": "/deep", "value": v}]})).is_err());
+        // Nesting step by step through paths is bounded too.
+        let mut ops = vec![json!({"op": "add", "path": "/n", "value": {}})];
+        let mut path = "/n".to_string();
+        for _ in 0..100 {
+            path.push_str("/a");
+            ops.push(json!({"op": "add", "path": path.clone(), "value": {}}));
+        }
+        assert!(s.execute("doc.patch", &json!({"patch": ops})).is_err());
     }
 
     #[test]

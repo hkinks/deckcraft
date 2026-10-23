@@ -47,7 +47,16 @@ enum Pending {
 #[derive(Clone, Debug)]
 pub enum TurnState {
     Idle,
-    Running { uid: u64, before: Arc<Presentation>, label: String, stopping: bool },
+    Running { uid: u64, before: Arc<Presentation>, label: String, stopping: bool, turn_id: Option<String> },
+}
+
+/// What a turn changed, kept for Revert while the page lives (across deck switches and
+/// reconnects, which rebuild the chat from the server's history).
+#[derive(Clone, Debug)]
+struct Snapshot {
+    uid: u64,
+    before: Arc<Presentation>,
+    after: Arc<Presentation>,
 }
 
 #[derive(Debug)]
@@ -64,6 +73,13 @@ pub struct AgentState {
     pub login_password: String,
     /// Turn card whose Revert asked for confirmation.
     pub confirm_revert: Option<usize>,
+    /// How long after Stop without the server ending the turn it is ended here (ms).
+    pub stop_grace_ms: f64,
+    /// With a turn running and nothing heard from the server for this long, it is ended here (ms).
+    pub silence_ms: f64,
+    stop_at: Option<f64>,
+    last_heard: f64,
+    snapshots: HashMap<String, Snapshot>,
     /// Tool calls (and a turn end that arrived behind them), run one per frame in order.
     pending: VecDeque<Pending>,
     deck_keys: HashMap<u64, String>,
@@ -86,6 +102,11 @@ impl Default for AgentState {
             login_user: String::new(),
             login_password: String::new(),
             confirm_revert: None,
+            stop_grace_ms: 10_000.0,
+            silence_ms: 360_000.0,
+            stop_at: None,
+            last_heard: 0.0,
+            snapshots: HashMap::new(),
             pending: VecDeque::new(),
             deck_keys: HashMap::new(),
             conversation_uid: None,
@@ -125,6 +146,10 @@ pub fn busy(app: &SlideApp) -> bool {
     app.agent.as_ref().is_some_and(|a| matches!(a.state.turn, TurnState::Running { .. }))
 }
 
+fn last_user(items: &[ChatItem]) -> String {
+    items.iter().rev().find_map(|i| if let ChatItem::User(s) = i { Some(s.clone()) } else { None }).unwrap_or_default()
+}
+
 fn first_line(s: &str) -> String {
     let l = s.lines().next().unwrap_or_default().trim();
     let mut out: String = l.chars().take(60).collect();
@@ -161,22 +186,26 @@ fn deck_context(app: &SlideApp, key: String) -> DeckContext {
 
 /// Close the running turn: merge its undo steps and record a turn card.
 fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, actions: Vec<String>, status: String) {
-    let TurnState::Running { uid, before, label, .. } = std::mem::replace(&mut client.state.turn, TurnState::Idle) else { return };
+    let TurnState::Running { uid, before, label, turn_id: started, .. } = std::mem::replace(&mut client.state.turn, TurnState::Idle) else {
+        return;
+    };
     client.state.pending.clear();
+    client.state.stop_at = None;
+    let turn_id = if turn_id.is_empty() { started.unwrap_or_default() } else { turn_id };
     let label = if status == "ok" { label } else { format!("{label} ({status})") };
     let changed = app.session.squash_undo_since(uid, &before, &label);
     let after = app.session.documents().iter().find(|d| d.uid == uid).map(|d| d.doc.clone());
     let changed = changed || after.as_ref().is_some_and(|a| !Arc::ptr_eq(a, &before));
-    let card = TurnCard {
-        turn_id,
-        label,
-        actions,
-        status,
-        uid,
-        before: changed.then_some(before),
-        after: if changed { after } else { None },
+    let (before, after) = match after {
+        Some(after) if changed => {
+            if !turn_id.is_empty() {
+                client.state.snapshots.insert(turn_id.clone(), Snapshot { uid, before: before.clone(), after: after.clone() });
+            }
+            (Some(before), Some(after))
+        }
+        _ => (None, None),
     };
-    client.state.turns.push(card);
+    client.state.turns.push(TurnCard { turn_id, label, actions, status, uid, before, after });
     client.state.items.push(ChatItem::Turn(client.state.turns.len() - 1));
 }
 
@@ -193,10 +222,11 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
         client.send(ClientMsg::ToolResult { v: VERSION, id, ok: false, content: vec![ContentPart::Text { text: "no turn is running".into() }] });
         return;
     };
-    let (ok, content) = if app.session.active().map(|d| d.uid) != Some(*uid) {
+    let uid = *uid;
+    let (ok, content) = if app.session.active().map(|d| d.uid) != Some(uid) {
         (false, vec![ContentPart::Text { text: "the deck this turn was editing is no longer the active document".into() }])
     } else {
-        tools::execute(app, ctx, &name, &input, client.vision())
+        tools::execute_on(app, ctx, Some(uid), &name, &input, client.vision())
     };
     let summary = content
         .iter()
@@ -235,14 +265,16 @@ fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
                         client.state.items.push(ChatItem::Assistant(it.text));
                     }
                     if let Some(t) = it.turn {
+                        // Turns made since this page opened can still be reverted.
+                        let snap = client.state.snapshots.get(&t.turn_id).cloned();
                         client.state.turns.push(TurnCard {
+                            label: format!("AI: {}", first_line(&last_user(&client.state.items))),
                             turn_id: t.turn_id,
-                            label: String::new(),
                             actions: t.actions,
                             status: t.status,
-                            uid: 0,
-                            before: None,
-                            after: None,
+                            uid: snap.as_ref().map_or(0, |s| s.uid),
+                            before: snap.as_ref().map(|s| s.before.clone()),
+                            after: snap.map(|s| s.after),
                         });
                         client.state.items.push(ChatItem::Turn(client.state.turns.len() - 1));
                     }
@@ -250,6 +282,11 @@ fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
             }
         }
         ServerMsg::Conversation { .. } => {}
+        ServerMsg::TurnStart { turn_id } => {
+            if let TurnState::Running { turn_id: id, .. } = &mut client.state.turn {
+                *id = Some(turn_id);
+            }
+        }
         ServerMsg::AssistantDelta { text } => match client.state.items.last_mut() {
             Some(ChatItem::Assistant(s)) => s.push_str(&text),
             _ => client.state.items.push(ChatItem::Assistant(text)),
@@ -291,7 +328,20 @@ pub fn tick(app: &mut SlideApp, ctx: &egui::Context) {
         client.send(ClientMsg::Hello { v: VERSION, tools: tools::advertised(), client_version: env!("CARGO_PKG_VERSION").into() });
     }
     for m in client.transport.poll() {
+        client.state.last_heard = crate::now_ms();
         handle(app, &mut client, m);
+    }
+    // The server should end every turn; if it doesn't (hung model call, half-open socket), don't
+    // keep the editor locked.
+    if matches!(client.state.turn, TurnState::Running { .. }) {
+        let now = crate::now_ms();
+        let stop_overdue = client.state.stop_at.is_some_and(|t| now - t >= client.state.stop_grace_ms);
+        let silent = now - client.state.last_heard >= client.state.silence_ms;
+        if stop_overdue || silent {
+            let why = if stop_overdue { "The agent didn't stop in time; the turn was ended here." } else { "No answer from the agent server; the turn was ended here." };
+            client.state.items.push(ChatItem::Notice(why.into()));
+            finish_turn(app, &mut client, String::new(), vec![], "interrupted".into());
+        }
     }
     // Another deck became active: show its conversation (not while a turn runs).
     if client.state.ready
@@ -325,7 +375,8 @@ pub fn send_prompt(app: &mut SlideApp, text: &str) {
         let before = d.doc.clone();
         let deck = deck_context(app, key);
         client.state.items.push(ChatItem::User(text.clone()));
-        client.state.turn = TurnState::Running { uid, before, label: format!("AI: {}", first_line(&text)), stopping: false };
+        client.state.turn = TurnState::Running { uid, before, label: format!("AI: {}", first_line(&text)), stopping: false, turn_id: None };
+        client.state.last_heard = crate::now_ms();
         client.state.conversation_uid = Some(uid);
         let provider = client.state.provider.clone();
         client.send(ClientMsg::UserMessage { v: VERSION, text, deck, provider });
@@ -337,8 +388,21 @@ pub fn stop(app: &mut SlideApp) {
     let Some(client) = app.agent.as_mut() else { return };
     if let TurnState::Running { stopping, .. } = &mut client.state.turn {
         *stopping = true;
+        client.state.stop_at = Some(crate::now_ms());
         client.transport.send(&ClientMsg::Stop { v: VERSION });
     }
+}
+
+/// Start a fresh conversation about this deck (the server keeps the earlier one).
+pub fn new_conversation(app: &mut SlideApp) {
+    let Some(client) = app.agent.as_mut() else { return };
+    if matches!(client.state.turn, TurnState::Running { .. }) {
+        return;
+    }
+    client.state.items.clear();
+    client.state.turns.clear();
+    client.state.confirm_revert = None;
+    client.transport.send(&ClientMsg::NewConversation { v: VERSION });
 }
 
 /// Revert turn `i`: Undo when it is the latest change, otherwise (after `confirmed`) put the deck
@@ -363,20 +427,10 @@ pub fn revert(app: &mut SlideApp, i: usize, confirmed: bool) -> RevertOutcome {
         }
         return RevertOutcome::NeedsConfirm;
     }
-    let Ok(v) = serde_json::to_value(&*before) else { return RevertOutcome::Unavailable };
-    let r = app.run("doc.replace", json!({"json": v}));
+    // The snapshot itself goes back in (one undoable step), so pictures keep their bytes.
+    let replaced = app.session.replace_doc(card.uid, before, &format!("Revert {}", card.label));
     if let Some(a) = app.agent.as_mut() {
         a.state.confirm_revert = None;
     }
-    match r {
-        Ok(_) => {
-            if let Some(st) = app.session.active_mut()
-                && let Some(e) = st.history.undo.last_mut()
-            {
-                e.label = format!("Revert {}", card.label);
-            }
-            RevertOutcome::Replaced
-        }
-        Err(_) => RevertOutcome::Unavailable,
-    }
+    if replaced { RevertOutcome::Replaced } else { RevertOutcome::Unavailable }
 }

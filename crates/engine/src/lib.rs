@@ -563,6 +563,22 @@ impl Session {
         st.history.redo.clear();
         true
     }
+    /// Make `doc` the presentation of document `uid` as one undo step labelled `label` (an agent
+    /// turn's Revert: the snapshot keeps its media bytes, which a JSON round trip would not).
+    /// False when the document is gone or already is `doc`.
+    pub fn replace_doc(&mut self, uid: u64, doc: Arc<Presentation>, label: &str) -> bool {
+        let Some(st) = self.docs.iter_mut().find(|d| d.uid == uid) else { return false };
+        if Arc::ptr_eq(&st.doc, &doc) {
+            return false;
+        }
+        let old = std::mem::replace(&mut st.doc, doc);
+        let sel = std::mem::take(&mut st.selection);
+        st.selection.slide = sel.slide.min(st.doc.slides.len().saturating_sub(1));
+        st.interaction = None;
+        st.revision += 1;
+        push_undo(st, HistoryEntry { label: label.to_string(), doc: old, selection: sel });
+        true
+    }
     pub fn doc(&self) -> Result<&DocState> {
         self.active().ok_or(EngineError::NoDocument)
     }

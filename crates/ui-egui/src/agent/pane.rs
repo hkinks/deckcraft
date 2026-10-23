@@ -67,8 +67,14 @@ fn header(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                 ui.painter().rect_filled(r, CornerRadius::same(4), t.hover);
             }
             icons::paint(ui.painter(), r.shrink(3.0), Icon::Close, t.text_dim, false);
-            if resp.on_hover_text("Close the agent pane").clicked() {
+            // While a turn runs the pane stays open: Stop lives here.
+            if resp.on_hover_text("Close the agent pane").clicked() && !client::busy(app) {
                 toggle(app);
+            }
+            let idle = !client::busy(app);
+            let connected = app.agent.as_ref().is_some_and(|a| a.transport.status() == LinkStatus::Connected);
+            if idle && connected && ui.small_button("New").on_hover_text("Start a new conversation about this deck").clicked() {
+                client::new_conversation(app);
             }
             let Some(a) = app.agent.as_mut() else { return };
             if a.state.providers.len() > 1 {

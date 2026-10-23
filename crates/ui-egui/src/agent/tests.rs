@@ -110,3 +110,11 @@ fn visibility_message_encodes() {
     assert_eq!(v["type"], "visibility");
     assert_eq!(v["hidden"], true);
 }
+
+#[test]
+fn check_refuses_switching_decks_and_undo() {
+    assert!(tools::check("run_command", &json!({"command": "window.next", "params": {}})).is_err());
+    assert!(tools::check("batch", &json!({"commands": [{"command": "slide.new"}, {"command": "window.next"}]})).is_err());
+    assert!(tools::check("run_command", &json!({"command": "edit.undo"})).is_err());
+    assert!(tools::check("run_command", &json!({"command": "edit.redo"})).is_err());
+}

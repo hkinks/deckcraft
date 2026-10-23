@@ -4107,3 +4107,18 @@ fn squash_undo_since_unknown_document_is_false() {
     assert!(!s.squash_undo_since(u64::MAX, &before, "x"));
     assert_ne!(s.active().unwrap().history.undo.last().unwrap().label, "x");
 }
+
+#[test]
+fn replace_doc_installs_a_snapshot_as_one_undo_step() {
+    let mut s = session();
+    let uid = s.active().unwrap().uid;
+    let before = s.active().unwrap().doc.clone();
+    s.execute("slide.new", &json!({})).unwrap();
+    let edited = s.active().unwrap().doc.clone();
+    assert!(s.replace_doc(uid, before.clone(), "Revert"));
+    assert!(Arc::ptr_eq(&s.active().unwrap().doc, &before));
+    assert_eq!(s.active().unwrap().history.undo.last().unwrap().label, "Revert");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(Arc::ptr_eq(&s.active().unwrap().doc, &edited));
+    assert!(!s.replace_doc(u64::MAX, before, "x"));
+}

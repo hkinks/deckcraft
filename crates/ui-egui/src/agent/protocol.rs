@@ -37,6 +37,8 @@ pub enum ClientMsg {
     /// The editor tab was hidden or shown: a hidden tab draws no frames and runs no tool calls,
     /// so the server pauses its tool timeout.
     Visibility { v: u32, hidden: bool },
+    /// Start a fresh conversation for this deck (earlier ones stay stored).
+    NewConversation { v: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -90,6 +92,10 @@ pub enum ServerMsg {
         id: String,
         #[serde(default)]
         title: String,
+    },
+    /// The server started the turn and gave it this id (sent before any tool call).
+    TurnStart {
+        turn_id: String,
     },
     AssistantDelta {
         text: String,

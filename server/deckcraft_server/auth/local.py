@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict, deque
+from collections import deque
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
+from starlette.concurrency import run_in_threadpool
 from itsdangerous import BadSignature, TimestampSigner
 from pydantic import BaseModel
 
@@ -17,6 +18,10 @@ COOKIE = "dc_session"
 MAX_AGE = 14 * 24 * 3600
 FAIL_LIMIT = 5
 FAIL_WINDOW = 600.0
+# Failed sign-ins per address (any usernames) before that address is refused for the window.
+IP_FAIL_LIMIT = 20
+# Most (user, address) and address records kept; the oldest go first.
+MAX_TRACKED = 10_000
 
 _hasher = PasswordHasher()
 
@@ -42,7 +47,7 @@ class LocalAuth:
         self.store = store
         self.signer = TimestampSigner(secret, salt="deckcraft-session")
         self.secure_cookie = secure_cookie
-        self.failures: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+        self.failures: dict[tuple[str, str], deque[float]] = {}
         # A dummy hash so unknown usernames take as long as wrong passwords.
         self._dummy = hash_password("not-a-real-password")
 
@@ -68,12 +73,27 @@ class LocalAuth:
     async def websocket_user(self, ws: WebSocket) -> User | None:
         return await self.user_from_cookies(ws.cookies)
 
-    def _limited(self, key: tuple[str, str]) -> bool:
-        q = self.failures[key]
+    def _recent(self, key) -> int:
+        q = self.failures.get(key)
+        if not q:
+            return 0
         now = time.monotonic()
         while q and now - q[0] > FAIL_WINDOW:
             q.popleft()
-        return len(q) >= FAIL_LIMIT
+        if not q:
+            self.failures.pop(key, None)
+        return len(q)
+
+    def _limited(self, key: tuple[str, str]) -> bool:
+        return self._recent(key) >= FAIL_LIMIT or self._recent(("*", key[1])) >= IP_FAIL_LIMIT
+
+    def _record_failure(self, key: tuple[str, str]) -> None:
+        now = time.monotonic()
+        for k in (key, ("*", key[1])):
+            q = self.failures.setdefault(k, deque())
+            q.append(now)
+        while len(self.failures) > MAX_TRACKED:
+            self.failures.pop(next(iter(self.failures)))
 
     def router(self) -> APIRouter:
         r = APIRouter()
@@ -85,9 +105,10 @@ class LocalAuth:
             if self._limited(key):
                 raise HTTPException(status_code=429, detail="too many failed logins, try again later")
             user = await self.store.get_user(body.username)
-            ok = verify_password(user.password_hash if user else self._dummy, body.password)
+            # argon2 takes tens of milliseconds of CPU: keep it off the event loop.
+            ok = await run_in_threadpool(verify_password, user.password_hash if user else self._dummy, body.password)
             if user is None or user.disabled or not ok:
-                self.failures[key].append(time.monotonic())
+                self._record_failure(key)
                 raise HTTPException(status_code=401, detail="wrong username or password")
             self.failures.pop(key, None)
             token = self.signer.sign(user.username).decode()

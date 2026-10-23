@@ -30,8 +30,10 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "patch_deck_json",
 ];
 
-/// Command families that reach outside the open deck (files, the app, the UI).
-const REFUSED_COMMAND_PREFIXES: &[&str] = &["file.", "app.", "ui.", "show."];
+/// Command families that reach outside the open deck (files, the app, the UI, other windows).
+const REFUSED_COMMAND_PREFIXES: &[&str] = &["file.", "app.", "ui.", "show.", "window."];
+/// The agent's turn is itself the undo unit; undoing from inside it would reach the user's steps.
+const REFUSED_COMMANDS: &[&str] = &["edit.undo", "edit.redo"];
 
 /// Largest text part handed back to the model.
 const MAX_TEXT: usize = 200 * 1024;
@@ -46,7 +48,7 @@ pub fn advertised() -> Vec<Value> {
 
 fn check_command(c: &Value) -> Result<(), String> {
     let id = c.get("command").and_then(Value::as_str).ok_or("missing `command`")?;
-    if REFUSED_COMMAND_PREFIXES.iter().any(|p| id.starts_with(p)) {
+    if REFUSED_COMMAND_PREFIXES.iter().any(|p| id.starts_with(p)) || REFUSED_COMMANDS.contains(&id) {
         return Err(format!("command `{id}` is not allowed for the agent: it can only change the open deck"));
     }
     if c.get("params").and_then(|p| p.get("path")).is_some() {
@@ -78,12 +80,17 @@ pub fn check(name: &str, input: &Value) -> Result<(), String> {
 struct LiveBackend<'a> {
     app: &'a mut SlideApp,
     ctx: &'a egui::Context,
+    /// The document the turn edits: every command checks it is still the active one.
+    uid: Option<u64>,
 }
 
 impl Backend for LiveBackend<'_> {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        if self.app.session.active().is_none() {
+        let Some(active) = self.app.session.active().map(|d| d.uid) else {
             return Err("no presentation is open in the editor".into());
+        };
+        if self.uid.is_some_and(|u| u != active) {
+            return Err("the deck this turn was editing is no longer the active document".into());
         }
         let (req, _rx) = ControlRequest::new(method, params);
         match control::handle(self.app, self.ctx, &req) {
@@ -119,10 +126,15 @@ fn clip(mut s: String) -> String {
 
 /// Run one tool call on the live session. `vision`: whether rendered images go back to the model.
 pub fn execute(app: &mut SlideApp, ctx: &egui::Context, name: &str, input: &Value, vision: bool) -> (bool, Vec<ContentPart>) {
+    execute_on(app, ctx, None, name, input, vision)
+}
+
+/// [`execute`], refusing every command once document `uid` is no longer the active one.
+pub fn execute_on(app: &mut SlideApp, ctx: &egui::Context, uid: Option<u64>, name: &str, input: &Value, vision: bool) -> (bool, Vec<ContentPart>) {
     if let Err(e) = check(name, input) {
         return (false, vec![ContentPart::Text { text: e }]);
     }
-    let r = call_tool(&mut LiveBackend { app, ctx }, name, input);
+    let r = call_tool(&mut LiveBackend { app, ctx, uid }, name, input);
     let mut parts = vec![];
     for c in r.content {
         match c.get("type").and_then(Value::as_str) {
