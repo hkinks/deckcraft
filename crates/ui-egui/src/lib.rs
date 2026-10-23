@@ -37,6 +37,7 @@ pub mod theme;
 pub mod thumbs;
 pub mod toast;
 pub mod uifonts;
+pub mod webfonts;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -447,6 +448,8 @@ pub struct SlideApp {
     pub agent: Option<Box<agent::client::AgentClient>>,
     /// Autosave to the host's recovery store (web app).
     pub autosave: Option<autosave::Autosave>,
+    /// Fonts on demand from the agent server's catalog (web).
+    pub webfonts: Option<webfonts::WebFonts>,
     /// Spelling squiggles, checked on a worker thread.
     pub squiggles: squiggles::Squiggles,
     pub dialog: Option<dialogs::Dialog>,
@@ -548,6 +551,7 @@ impl SlideApp {
             control_rx: None,
             agent: None,
             autosave: None,
+            webfonts: None,
             squiggles: Default::default(),
             dialog: None,
             thesaurus_query: String::new(),
@@ -1827,6 +1831,7 @@ impl SlideApp {
         let t = theme::Tokens::get(&ctx);
         agent::client::tick(self, &ctx);
         self.autosave_tick();
+        self.fonts_tick();
         self.tick_media(&ctx);
         eyedropper::tick(self, &ctx);
         self.opening_ui(&ctx);
@@ -2078,6 +2083,8 @@ fn js_now() -> f64 {
 mod animpane_tests;
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod webfonts_tests;
 #[cfg(test)]
 mod browsetheme_tests;
 #[cfg(test)]

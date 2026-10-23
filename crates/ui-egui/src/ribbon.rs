@@ -472,7 +472,12 @@ pub fn font_families(app: &SlideApp) -> Vec<String> {
         v.push(m.theme.fonts.major.latin.clone());
         v.push(m.theme.fonts.minor.latin.clone());
     }
-    v.extend(deckcraft_fonts::FontDb::global().families());
+    let mut rest = deckcraft_fonts::FontDb::global().families();
+    // Families the agent server loads on demand (web).
+    rest.extend(app.catalog_families());
+    rest.sort_by_key(|a| a.to_lowercase());
+    rest.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    v.extend(rest);
     v.dedup();
     v
 }

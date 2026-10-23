@@ -46,6 +46,8 @@ class Settings(BaseModel):
     limits: Limits = Field(default_factory=Limits)
     web: WebCfg = Field(default_factory=WebCfg)
     site_dir: Path | None = None
+    # Fonts the web editor loads on demand (scripts/fetch-fonts.py); relative to the working dir.
+    fonts_dir: Path | None = Path("fonts")
     db_path: Path = Path("data/deckcraft.db")
     session_secret: str = ""
     secure_cookie: bool = False

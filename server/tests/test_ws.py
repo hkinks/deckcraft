@@ -363,3 +363,23 @@ def test_web_tools_can_be_switched_off(env):
         "web": {"enabled": False},
     })
     assert settings.web.enabled is False
+
+
+def test_font_catalog_and_files_are_served(tmp_path, env):
+    fonts = tmp_path / "fonts"
+    (fonts / "inter").mkdir(parents=True)
+    (fonts / "catalog.json").write_text('{"families": [{"family": "Inter", "files": ["inter/Inter.ttf"]}]}')
+    (fonts / "inter" / "Inter.ttf").write_bytes(b"\x00\x01\x00\x00fake")
+    _, _, store = env
+    settings = Settings.model_validate({
+        "default_provider": "fake",
+        "providers": {"fake": {"kind": "openai_compat", "base_url": "http://unused/v1", "model": "m"}},
+        "fonts_dir": str(fonts),
+    })
+    client = TestClient(create_app(settings, store, provider_factory=lambda cfg: Scripted([])))
+    r = client.get("/fonts/catalog.json")
+    assert r.status_code == 200 and r.json()["families"][0]["family"] == "Inter"
+    r = client.get("/fonts/inter/Inter.ttf")
+    assert r.status_code == 200 and r.content.startswith(b"\x00\x01")
+    assert "max-age" in r.headers.get("cache-control", "")
+    assert client.get("/fonts/../config.toml").status_code == 404

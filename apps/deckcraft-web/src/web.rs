@@ -53,7 +53,9 @@ pub fn start() {
                     app.set_agent_transport(Box::new(agent.clone()));
                     app.set_recovery_store(Box::new(crate::recovery_idb::IdbStore::new(cc.egui_ctx.clone())));
                     let unsaved = warn_before_leaving();
-                    Ok(Box::new(WebShell { app, inbox, agent: Some(agent), unsaved }))
+                    let fonts = std::rc::Rc::default();
+                    crate::fonts_web::load_catalog(cc.egui_ctx.clone(), std::rc::Rc::clone(&fonts));
+                    Ok(Box::new(WebShell { app, inbox, agent: Some(agent), unsaved, fonts }))
                 }),
             )
             .await;
@@ -79,7 +81,11 @@ struct WebShell {
     agent: Option<crate::agent_ws::WebAgentTransport>,
     /// Whether any presentation has unsaved changes (read by the page's beforeunload handler).
     unsaved: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The agent server's font catalog once it has loaded.
+    fonts: FontSlot,
 }
+
+type FontSlot = std::rc::Rc<std::cell::RefCell<Option<(Vec<deckcraft_ui_egui::webfonts::CatalogFamily>, crate::fonts_web::WebFontFetcher)>>>;
 
 /// Ask the browser to confirm leaving the page while a presentation has unsaved changes.
 fn warn_before_leaving() -> std::rc::Rc<std::cell::Cell<bool>> {
@@ -122,6 +128,9 @@ impl eframe::App for WebShell {
                     }
                 }
             });
+        }
+        if let Some((catalog, fetcher)) = self.fonts.borrow_mut().take() {
+            self.app.set_font_catalog(catalog, Box::new(fetcher));
         }
         if self.agent.as_ref().is_some_and(|a| a.no_server()) {
             self.app.agent = None;

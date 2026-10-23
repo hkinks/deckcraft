@@ -15,6 +15,13 @@ from .agent.web import WebTools
 from .ws import RateLimiter, agent_socket
 
 
+class CachedStatic(StaticFiles):
+    def file_response(self, *args, **kwargs):
+        r = super().file_response(*args, **kwargs)
+        r.headers["cache-control"] = "public, max-age=604800"
+        return r
+
+
 def create_app(
     settings: Settings,
     store: Store,
@@ -46,6 +53,10 @@ def create_app(
     async def ws_agent(ws: WebSocket):
         await agent_socket(ws, auth, settings, store, providers, limiter, web_tools)
 
+    # Fonts on demand for the web editor (scripts/fetch-fonts.py): long-cached, they never change
+    # under a name.
+    if settings.fonts_dir is not None and settings.fonts_dir.exists():
+        app.mount("/fonts", CachedStatic(directory=settings.fonts_dir), name="fonts")
     if settings.site_dir is not None and settings.site_dir.exists():
         app.mount("/", StaticFiles(directory=settings.site_dir, html=True), name="site")
     return app
