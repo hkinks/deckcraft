@@ -22,6 +22,10 @@ const TITLE: f32 = 15.0;
 const BODY: f32 = 13.0;
 const META: f32 = 11.0;
 
+/// Every symbol character the pane draws as text (checked against the UI font by a test: a
+/// missing glyph shows as an empty box).
+pub const SYMBOLS: &str = "✓×↺↻■!→“”•·…−";
+
 /// Suggestions in an empty chat; a click puts one in the prompt box.
 const SUGGESTIONS: &[&str] = &["Add an agenda slide", "Make all titles consistent", "Turn slide 2 into a table", "Tighten the wording on this slide"];
 
@@ -272,17 +276,17 @@ fn ago(ms: Option<f64>) -> String {
     }
 }
 
-/// A small coloured pill: ✓ done, ■ stopped, ↩ reverted…
+/// A small coloured pill: ✓ done, ■ stopped, ↺ reverted…
 fn status_pill(ui: &mut Ui, status: &str, reverted: bool, t: &Tokens) {
     let (text, color) = if reverted {
-        ("↩ reverted", t.text_dim)
+        ("↺ reverted", t.text_dim)
     } else {
         match status {
             "ok" | "" => ("✓ done", ok_color(t)),
             "stopped" => ("■ stopped", warn_color(t)),
-            "interrupted" => ("⚠ interrupted", warn_color(t)),
-            "limit" => ("⚠ limit reached", warn_color(t)),
-            _ => ("✗ error", err_color(t)),
+            "interrupted" => ("! interrupted", warn_color(t)),
+            "limit" => ("! limit reached", warn_color(t)),
+            _ => ("× error", err_color(t)),
         }
     };
     egui::Frame::NONE.fill(color.gamma_multiply(0.15)).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
@@ -470,7 +474,7 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                     egui::CollapsingHeader::new(RichText::new(title).font(theme::font(META)).color(t.text_dim)).id_salt(("steps", start)).default_open(false).show(ui, |ui| {
                         for s in steps {
                             if let ChatItem::Tool { name, ok, summary } = s {
-                                let mark = if *ok { "✓" } else { "✗" };
+                                let mark = if *ok { "✓" } else { "×" };
                                 ui.label(RichText::new(format!("{mark} {name}")).font(theme::font(META)).color(if *ok { t.text_dim } else { err_color(t) })).on_hover_text(summary);
                             }
                         }
@@ -545,7 +549,7 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
             ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                 let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), if can { Sense::click() } else { Sense::hover() });
                 ui.painter().rect_filled(r, CornerRadius::same(13), if can { t.accent } else { t.border });
-                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "➤", theme::font(12.0), if can { t.accent_text } else { t.text_faint });
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "→", theme::bold(14.0), if can { t.accent_text } else { t.text_faint });
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can, "Send"));
                 send = can && resp.on_hover_text("Send (Enter)").clicked();
             });

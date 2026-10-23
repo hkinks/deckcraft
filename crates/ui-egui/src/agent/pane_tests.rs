@@ -186,7 +186,7 @@ fn changes_tab_offers_restore_after_revert() {
     h.run_steps(2);
     h.get_by_label("Revert").click();
     h.run_steps(2);
-    h.get_by_label("↩ reverted");
+    h.get_by_label("↺ reverted");
     h.get_by_label("Restore").click();
     h.run_steps(2);
     assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n);
@@ -246,4 +246,14 @@ fn tabs_show_a_pointing_hand() {
         h.run_steps(2);
         assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::PointingHand, "{label}");
     }
+}
+
+#[test]
+fn every_symbol_the_pane_draws_is_in_the_ui_font() {
+    let (h, _) = harness(LinkStatus::Connected);
+    let missing: Vec<char> = super::pane::SYMBOLS
+        .chars()
+        .filter(|c| !h.ctx.fonts_mut(|f| f.has_glyph(&crate::theme::font(13.0), *c)))
+        .collect();
+    assert!(missing.is_empty(), "no glyph for {missing:?}");
 }
