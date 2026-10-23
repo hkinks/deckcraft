@@ -1171,6 +1171,7 @@ dependencies = [
  "deckcraft-engine",
  "deckcraft-fonts",
  "deckcraft-geom",
+ "deckcraft-mcp",
  "deckcraft-media",
  "deckcraft-model",
  "deckcraft-render",

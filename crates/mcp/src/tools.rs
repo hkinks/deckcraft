@@ -161,6 +161,23 @@ pub fn tool_definitions() -> Vec<Value> {
             true,
         ),
         tool(
+            "get_deck_json",
+            "Get deck JSON",
+            "The presentation model as JSON (the structure of presentation.json in a .deckcraft file; media bytes omitted). Narrow it with a JSON Pointer such as /slides/0 or /slides/0/shapes/2. Large results are truncated to maxBytes.",
+            obj(json!({"pointer": string("JSON Pointer into the model, e.g. /slides/0 (default: whole deck)"), "maxBytes": int("Largest result in bytes (default 262144, at most 4194304)")}), &[]),
+            true,
+        ),
+        tool(
+            "patch_deck_json",
+            "Patch deck JSON",
+            "Change the presentation model with RFC 6902 JSON Patch operations (add, remove, replace, move, copy, test) against the get_deck_json structure. For edits no command expresses. The result is validated like an opened file; a failing patch changes nothing. One undo step.",
+            obj(
+                json!({"patch": {"type": "array", "description": "RFC 6902 operations, e.g. [{\"op\": \"replace\", \"path\": \"/slides/0/hidden\", \"value\": true}]", "items": {"type": "object"}}}),
+                &["patch"],
+            ),
+            false,
+        ),
+        tool(
             "render_slide",
             "Render slide",
             "Render a slide to a PNG image and return it, to check your work visually.",
@@ -379,6 +396,8 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, a: &Value) -> ToolResult {
         "export" => wrap(exec(b, "file.export", a)),
         "inspect_document" => wrap(b.call("document.inspect", json!({}))),
         "inspect_slide" => wrap(exec(b, "slide.inspect", a)),
+        "get_deck_json" => wrap(exec(b, "doc.json", a)),
+        "patch_deck_json" => wrap(exec(b, "doc.patch", a)),
         "render_slide" => match b.call("ui.render", a.clone()) {
             Ok(v) => match v.get("png").and_then(Value::as_str) {
                 Some(png) => {

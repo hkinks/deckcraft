@@ -242,3 +242,18 @@ fn export_tool_lists_gif_and_its_options() {
     assert_eq!(r["result"]["isError"], true, "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn deck_json_tools_read_and_patch() {
+    let mut s = Server::new(Box::new(Headless::new()));
+    tool(&mut s, "new_presentation", json!({}));
+    tool(&mut s, "add_slide", json!({"layout": "title"}));
+    let size = tool(&mut s, "get_deck_json", json!({"pointer": "/slideSize"}));
+    assert!(size["json"]["width"].as_f64().unwrap() > 0.0, "{size}");
+    let before = tool(&mut s, "inspect_document", json!({}))["slides"].as_array().unwrap().len();
+    tool(&mut s, "patch_deck_json", json!({"patch": [{"op": "remove", "path": "/slides/0"}]}));
+    let after = tool(&mut s, "inspect_document", json!({}))["slides"].as_array().unwrap().len();
+    assert_eq!(after, before - 1);
+    let bad = call(&mut s, 9, "tools/call", json!({"name": "patch_deck_json", "arguments": {"patch": [{"op": "remove", "path": "/zzz"}]}}));
+    assert_eq!(bad["result"]["isError"], true);
+}
