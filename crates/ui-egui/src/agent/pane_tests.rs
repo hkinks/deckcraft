@@ -258,3 +258,18 @@ fn every_symbol_the_pane_draws_is_in_the_ui_font() {
         .collect();
     assert!(missing.is_empty(), "no glyph for {missing:?}");
 }
+
+#[test]
+fn step_count_does_not_overlap_stop() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    h.set_size(egui::vec2(1100.0, 800.0));
+    client::send_prompt(h.state_mut(), "many steps");
+    for i in 0..13 {
+        wire.push(ServerMsg::ToolCall { id: format!("t{i}"), name: "inspect_slide".into(), input: json!({}) });
+    }
+    h.run_steps(16);
+    let stop = h.get_by_label("Stop").rect();
+    // The strip's count (the chat's folded steps row has the same text further down).
+    let steps = h.get_all_by_label("13 steps").map(|n| n.rect()).min_by(|a, b| (a.center().y - stop.center().y).abs().total_cmp(&(b.center().y - stop.center().y).abs())).unwrap();
+    assert!(!stop.intersects(steps), "steps {steps:?} overlaps Stop {stop:?}");
+}

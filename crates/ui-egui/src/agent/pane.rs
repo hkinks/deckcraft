@@ -203,10 +203,13 @@ fn working_strip(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(RichText::new("Agent is editing the deck…").font(theme::font(BODY)).color(t.text));
-            if steps > 0 {
-                ui.label(RichText::new(format!("{steps} step{}", if steps == 1 { "" } else { "s" })).font(theme::font(META)).color(t.text_dim));
-            }
+            // Text and count stacked on the left, Stop on the right: they never overlap.
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(RichText::new("Agent is editing the deck…").font(theme::font(BODY)).color(t.text));
+                let count = if steps == 0 { "starting".to_string() } else { format!("{steps} step{}", if steps == 1 { "" } else { "s" }) };
+                ui.label(RichText::new(count).font(theme::font(META)).color(t.text_dim));
+            });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if stopping {
                     ui.add_enabled(false, egui::Button::new("Stopping…"));
