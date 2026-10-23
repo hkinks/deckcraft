@@ -17,14 +17,17 @@ class Scripted:
 
     def __init__(self, responses):
         self.responses = responses
+        self.systems = []
 
     async def stream(self, system, history, tools):
+        SYSTEMS.append(system)
         text, uses = self.responses.pop(0) if self.responses else ("(out of script)", [])
         if text:
             yield TextDelta(text)
         yield Done("end_turn", {"input_tokens": 3, "output_tokens": 2}, AssistantMsg(text, uses, None, "scripted"))
 
 
+SYSTEMS: list[str] = []
 TOOLS = [{"name": "run_command", "description": "Run a command", "inputSchema": {"type": "object"}}]
 
 
@@ -259,3 +262,60 @@ def test_bad_provider_type_is_an_error_not_a_dropped_connection(env):
         hello(ws)
         ws.send_json({"v": 1, "type": "user_message", "text": "hi", "deck": {"deck_key": "d"}, "provider": ["x"]})
         assert ws.receive_json()["code"] == "bad_provider"
+
+
+def run_turn(ws, text="go"):
+    ws.send_json({"v": 1, "type": "open_conversation", "deck_key": "deck#1"})
+    ws.receive_json()
+    ws.send_json({"v": 1, "type": "user_message", "text": text, "deck": {"deck_key": "deck#1", "slides": 1, "current": 0}})
+    while (m := ws.receive_json())["type"] != "turn_end":
+        pass
+
+
+def test_instructions_default_to_decisive_working_style(env):
+    from deckcraft_server.agent.prompt import DEFAULT_INSTRUCTIONS
+    client, script, _ = env
+    login(client)
+    with client.websocket_connect("/ws/agent") as ws:
+        ready = hello(ws)
+    assert ready["instructions"] == DEFAULT_INSTRUCTIONS
+    assert ready["default_instructions"] == DEFAULT_INSTRUCTIONS
+    assert "apply it" in DEFAULT_INSTRUCTIONS and "alternative" in DEFAULT_INSTRUCTIONS
+
+
+def test_edited_instructions_are_saved_and_used_in_the_system_prompt(env):
+    client, script, store = env
+    script += [("ok", [])]
+    login(client)
+    SYSTEMS.clear()
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "set_instructions", "text": "Always use British spelling."})
+        assert ws.receive_json() == {"type": "instructions", "text": "Always use British spelling."}
+        run_turn(ws)
+    assert "Always use British spelling." in SYSTEMS[-1]
+    assert "inspect_document" in SYSTEMS[-1], "the fixed part stays"
+    with client.websocket_connect("/ws/agent") as ws:
+        assert hello(ws)["instructions"] == "Always use British spelling.", "kept for the next session"
+
+
+def test_empty_instructions_reset_to_the_default(env):
+    from deckcraft_server.agent.prompt import DEFAULT_INSTRUCTIONS
+    client, _, _ = env
+    login(client)
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "set_instructions", "text": "x"})
+        ws.receive_json()
+        ws.send_json({"v": 1, "type": "set_instructions", "text": "   "})
+        assert ws.receive_json() == {"type": "instructions", "text": DEFAULT_INSTRUCTIONS}
+
+
+def test_overlong_instructions_are_refused(env):
+    client, _, _ = env
+    login(client)
+    with client.websocket_connect("/ws/agent") as ws:
+        hello(ws)
+        ws.send_json({"v": 1, "type": "set_instructions", "text": "x" * 20001})
+        m = ws.receive_json()
+    assert m["type"] == "error" and m["code"] == "too_long"

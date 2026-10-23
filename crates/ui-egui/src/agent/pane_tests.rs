@@ -23,6 +23,8 @@ fn harness(status: LinkStatus) -> (Harness<'static, SlideApp>, Wire) {
         user: "ana".into(),
         providers: vec![ProviderInfo { id: "qwen-local".into(), model: "qwen3.8".into(), vision: false, label: String::new() }],
         default_provider: "qwen-local".into(),
+        instructions: String::new(),
+        default_instructions: String::new(),
     });
     let mut h = Harness::builder().with_size(egui::vec2(1500.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut SlideApp| {
@@ -221,6 +223,8 @@ fn header_shows_the_friendly_model_name() {
         user: "ana".into(),
         providers: vec![ProviderInfo { id: "qwen-local".into(), model: "qwen3.8".into(), vision: false, label: "Qwen 3.8 (local)".into() }],
         default_provider: "qwen-local".into(),
+        instructions: String::new(),
+        default_instructions: String::new(),
     });
     h.run_steps(3);
     h.get_by_label("Qwen 3.8 (local)");
@@ -307,4 +311,35 @@ fn revert_confirmation_says_what_goes_and_how_to_get_it_back() {
     h.get_by_label("Revert anyway").click();
     h.run_steps(2);
     assert!(client::is_reverted(h.state(), 0));
+}
+
+#[test]
+fn instructions_tab_edits_and_saves_the_agents_working_style() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    wire.push(ServerMsg::Ready {
+        user: "ana".into(),
+        providers: vec![ProviderInfo { id: "qwen-local".into(), model: "qwen3.8".into(), vision: false, label: String::new() }],
+        default_provider: "qwen-local".into(),
+        instructions: "Pick and apply.".into(),
+        default_instructions: "Pick and apply.".into(),
+    });
+    h.run_steps(3);
+    h.get_by_label("Instructions").click();
+    h.run_steps(2);
+    let field = h.get_by_label("Agent instructions");
+    assert_eq!(field.value().as_deref(), Some("Pick and apply."));
+    assert!(h.query_by_label("Save").is_none(), "nothing to save yet");
+    h.state_mut().agent.as_mut().unwrap().state.instructions_draft = Some("Use British spelling.".into());
+    h.run_steps(2);
+    h.get_by_label("Save").click();
+    h.run_steps(2);
+    let sent = wire.sent_of("set_instructions");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["text"], "Use British spelling.");
+    wire.push(ServerMsg::Instructions { text: "Use British spelling.".into() });
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Agent instructions").value().as_deref(), Some("Use British spelling."));
+    h.get_by_label("Reset to default").click();
+    h.run_steps(2);
+    assert_eq!(wire.sent_of("set_instructions")[1]["text"], "");
 }

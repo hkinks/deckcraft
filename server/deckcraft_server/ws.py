@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .agent.loop import flatten_history, run_turn
-from .agent.prompt import SYSTEM_PROMPT, editor_context
+from .agent.prompt import DEFAULT_INSTRUCTIONS, MAX_INSTRUCTIONS, editor_context, system_prompt
 from .config import Settings
 from .providers.base import AssistantMsg, HistoryItem, UserMsg
 from .store import Store, User
@@ -106,6 +106,8 @@ class Connection:
             await self.send({
                 "type": "ready",
                 "user": self.user.username,
+                "instructions": (await self.store.get_instructions(self.user.id) or "").strip() or DEFAULT_INSTRUCTIONS,
+                "default_instructions": DEFAULT_INSTRUCTIONS,
                 "providers": [{"id": k, "model": v.model, "vision": v.vision, "label": v.label or k} for k, v in self.settings.providers.items()],
                 "default_provider": self.settings.default_provider,
             })
@@ -125,6 +127,14 @@ class Connection:
             if self.turn_task and not self.turn_task.done():
                 return await self.error("busy", "a turn is running")
             self.conversation_id, self.history = None, []
+        elif t == "set_instructions":
+            text = msg.get("text") if isinstance(msg.get("text"), str) else ""
+            if len(text) > MAX_INSTRUCTIONS:
+                return await self.error("too_long", f"instructions are limited to {MAX_INSTRUCTIONS} characters")
+            text = text.strip()
+            # The default is stored as "no instructions", so later changes to it reach this user.
+            await self.store.set_instructions(self.user.id, None if not text or text == DEFAULT_INSTRUCTIONS.strip() else text)
+            await self.send({"type": "instructions", "text": text or DEFAULT_INSTRUCTIONS})
         elif t == "visibility":
             self.hidden = bool(msg.get("hidden"))
         else:
@@ -194,7 +204,7 @@ class Connection:
         status, result = "error", None
         try:
             result = await run_turn(
-                provider, SYSTEM_PROMPT, self.history, self.tools or [], self, self.settings.limits,
+                provider, system_prompt(await self.store.get_instructions(self.user.id)), self.history, self.tools or [], self, self.settings.limits,
                 lambda d: self.send({"type": "assistant_delta", "text": d}), self.stop,
             )
             status = result.status

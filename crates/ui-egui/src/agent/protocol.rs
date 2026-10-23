@@ -39,6 +39,8 @@ pub enum ClientMsg {
     Visibility { v: u32, hidden: bool },
     /// Start a fresh conversation for this deck (earlier ones stay stored).
     NewConversation { v: u32 },
+    /// Save the person's working style for the agent ("" puts the default back).
+    SetInstructions { v: u32, text: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -84,7 +86,14 @@ pub enum ServerMsg {
         providers: Vec<ProviderInfo>,
         #[serde(default)]
         default_provider: String,
+        /// The person's working style for the agent (the editable part of its instructions).
+        #[serde(default)]
+        instructions: String,
+        #[serde(default)]
+        default_instructions: String,
     },
+    /// The working style as saved.
+    Instructions { text: String },
     History {
         #[serde(default)]
         conversation_id: Option<String>,

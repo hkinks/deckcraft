@@ -92,6 +92,7 @@ pub enum PaneTab {
     #[default]
     Chat,
     Changes,
+    Instructions,
 }
 
 #[derive(Debug)]
@@ -105,6 +106,11 @@ pub struct AgentState {
     pub provider: Option<String>,
     pub user: String,
     pub input: String,
+    /// The agent's working style as saved on the server, and its default.
+    pub instructions: String,
+    pub default_instructions: String,
+    /// The Instructions tab's unsaved edit.
+    pub instructions_draft: Option<String>,
     /// Requests typed while the agent was busy, sent one after another: (document uid, text).
     queue: VecDeque<(u64, String)>,
     /// A turn ended without finishing (stopped, error, limit): the queue waits for the person.
@@ -140,6 +146,9 @@ impl Default for AgentState {
             provider: None,
             user: String::new(),
             input: String::new(),
+            instructions: String::new(),
+            default_instructions: String::new(),
+            instructions_draft: None,
             queue: VecDeque::new(),
             queue_paused: false,
             login_user: String::new(),
@@ -401,7 +410,13 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
 
 fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
     match m {
-        ServerMsg::Ready { user, providers, default_provider } => {
+        ServerMsg::Instructions { text } => {
+            client.state.instructions = text;
+            client.state.instructions_draft = None;
+        }
+        ServerMsg::Ready { user, providers, default_provider, instructions, default_instructions } => {
+            client.state.instructions = instructions;
+            client.state.default_instructions = default_instructions;
             client.state.user = user;
             if client.state.provider.as_ref().is_none_or(|p| !providers.iter().any(|x| &x.id == p)) {
                 client.state.provider = Some(default_provider);
@@ -638,6 +653,13 @@ pub fn stop(app: &mut SlideApp) {
         *stopping = true;
         client.state.stop_at = Some(crate::now_ms());
         client.transport.send(&ClientMsg::Stop { v: VERSION });
+    }
+}
+
+/// Save the agent's working style ("" resets it to the default).
+pub fn set_instructions(app: &mut SlideApp, text: &str) {
+    if let Some(client) = app.agent.as_mut() {
+        client.send(ClientMsg::SetInstructions { v: VERSION, text: text.to_string() });
     }
 }
 

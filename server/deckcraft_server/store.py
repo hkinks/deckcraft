@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS users (
     disabled INTEGER NOT NULL DEFAULT 0,
     created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    instructions TEXT
+);
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -118,6 +122,21 @@ class Store:
             await db.commit()
 
     # Conversations and messages
+
+    async def get_instructions(self, user_id: int) -> str | None:
+        async with self._db() as db:
+            async with db.execute("SELECT instructions FROM user_settings WHERE user_id = ?", (user_id,)) as cur:
+                row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def set_instructions(self, user_id: int, text: str | None) -> None:
+        async with self._db() as db:
+            await db.execute(
+                "INSERT INTO user_settings (user_id, instructions) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET instructions = excluded.instructions",
+                (user_id, text),
+            )
+            await db.commit()
 
     async def create_conversation(self, user_id: int, deck_key: str, title: str) -> str:
         cid = _new_id()

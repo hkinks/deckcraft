@@ -94,6 +94,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
                     match app.agent.as_ref().map_or(PaneTab::Chat, |a| a.state.tab) {
                         PaneTab::Chat => chat(app, ui, &t),
                         PaneTab::Changes => changes(app, ui, &t),
+                        PaneTab::Instructions => instructions(app, ui, &t),
                     }
                 }
             }
@@ -174,6 +175,7 @@ fn tabs(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         for (tab, label, tip) in [
             (PaneTab::Chat, "Chat".to_string(), "The conversation"),
             (PaneTab::Changes, format!("Changes ({n})"), "Everything the agent changed in this deck, with Revert"),
+            (PaneTab::Instructions, "Instructions".to_string(), "How the agent should work: your standing instructions"),
         ] {
             let on = a.state.tab == tab;
             let text = RichText::new(label).font(if on { theme::bold(BODY) } else { theme::font(BODY) }).color(if on { t.text } else { t.text_dim });
@@ -607,6 +609,65 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     if (send || enter) && !a.state.input.trim().is_empty() {
         let text = std::mem::take(&mut a.state.input);
         client::queue_prompt(app, &text);
+    }
+}
+
+/// The agent's working style: standing instructions the person can edit, sent with every request.
+fn instructions(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
+    let Some(a) = app.agent.as_mut() else { return };
+    let saved = a.state.instructions.clone();
+    let is_default = saved.trim() == a.state.default_instructions.trim();
+    ui.label(RichText::new("How the agent works").font(theme::bold(BODY)).color(t.text));
+    ui.label(
+        RichText::new("Standing instructions sent with every request, for example tone, spelling or how much to ask before acting. Saved to your account.")
+            .font(theme::font(12.0))
+            .color(t.text_dim),
+    );
+    ui.add_space(4.0);
+    let draft = a.state.instructions_draft.get_or_insert_with(|| saved.clone());
+    let h = (ui.available_height() - 64.0).max(120.0);
+    let shown = draft.clone();
+    egui::Frame::NONE.fill(t.field_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("agent_instructions").max_height(h).auto_shrink([false, true]).show(ui, |ui| {
+            let r = ui.add(egui::TextEdit::multiline(draft).frame(egui::Frame::NONE).desired_width(f32::INFINITY).desired_rows(10).font(theme::font(12.5)));
+            r.widget_info(move || {
+                let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Agent instructions");
+                info.current_text_value = Some(shown.clone());
+                info
+            });
+        });
+    });
+    let changed = a.state.instructions_draft.as_deref().is_some_and(|d| d.trim() != saved.trim());
+    let mut save = false;
+    let mut reset = false;
+    let mut discard = false;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if !is_default
+            && ui
+                .add(egui::Button::new(RichText::new("Reset to default").font(theme::font(12.0)).color(t.text_dim)).frame(false))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+        {
+            reset = true;
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if changed {
+                save = ui.add(egui::Button::new(RichText::new("Save").font(theme::font(12.0)).color(t.accent_text)).fill(t.accent).min_size(vec2(64.0, 24.0))).clicked();
+                discard = ui.add(egui::Button::new(RichText::new("Discard").font(theme::font(12.0))).min_size(vec2(64.0, 24.0))).clicked();
+            } else {
+                ui.label(RichText::new(if is_default { "Default instructions" } else { "Saved" }).font(theme::font(META)).color(t.text_faint));
+            }
+        });
+    });
+    if discard {
+        a.state.instructions_draft = None;
+    }
+    if save {
+        let text = a.state.instructions_draft.clone().unwrap_or_default();
+        client::set_instructions(app, &text);
+    } else if reset {
+        client::set_instructions(app, "");
     }
 }
 
