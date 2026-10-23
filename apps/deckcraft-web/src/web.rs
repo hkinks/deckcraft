@@ -49,7 +49,9 @@ pub fn start() {
                     if q.contains("show") {
                         app.start_show(0, false);
                     }
-                    Ok(Box::new(WebShell { app, inbox }))
+                    let agent = crate::agent_ws::WebAgentTransport::new(cc.egui_ctx.clone());
+                    app.set_agent_transport(Box::new(agent.clone()));
+                    Ok(Box::new(WebShell { app, inbox, agent: Some(agent) }))
                 }),
             )
             .await;
@@ -71,6 +73,8 @@ fn query() -> String {
 struct WebShell {
     app: SlideApp,
     inbox: Inbox,
+    /// Until the page is known to come from an agent server (otherwise the pane goes away).
+    agent: Option<crate::agent_ws::WebAgentTransport>,
 }
 
 impl eframe::App for WebShell {
@@ -96,6 +100,10 @@ impl eframe::App for WebShell {
                     }
                 }
             });
+        }
+        if self.agent.as_ref().is_some_and(|a| a.no_server()) {
+            self.app.agent = None;
+            self.agent = None;
         }
         self.app.logic(ctx);
     }
