@@ -300,6 +300,8 @@ icons! {
     Star => "star",
     Image => "image",
     Sparkle => "sparkle",
+    /// The AI agent: a chat bubble with a sparkle in it.
+    Agent => "agent",
     Palette => "palette",
     Grid => "grid",
     List => "list",
@@ -2329,6 +2331,11 @@ fn draw(p: &Pen<'_>, icon: Icon) {
         I::Sparkle => {
             p.sparkle((10.5, 13.0), 9.0, PU);
             p.sparkle((19.0, 5.0), 3.8, Y);
+        }
+        I::Agent => {
+            p.bubble(2.5, 5.0, 18.5, 17.5, t(PU), K);
+            p.sparkle((10.5, 11.2), 4.6, PU);
+            p.sparkle((19.5, 4.5), 3.4, Y);
         }
         I::Palette => {
             let mut pts = arc_pts((12.0, 12.0), 9.8, 9.5, 70.0, 380.0);
