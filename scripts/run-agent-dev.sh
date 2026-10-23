@@ -11,6 +11,8 @@ if [ "${1:-}" = "--rebuild" ] || [ ! -f "$root/dist/web/index.html" ]; then
   (cd "$root/apps/deckcraft-web" && trunk build --release)
 fi
 cd "$root/server"
+# Fonts the web editor loads on demand (36 open-licensed families, ~60 MB); once.
+[ -f fonts/catalog.json ] || echo "note: no font catalog; run scripts/fetch-fonts.py for more fonts in the editor" >&2
 [ -f config.toml ] || cp config.example.toml config.toml
 # A stable session secret for development, so a restart doesn't sign everyone out.
 [ -f .session-secret ] || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > .session-secret

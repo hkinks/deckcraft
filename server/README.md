@@ -31,6 +31,30 @@ Building the web editor needs Rust with the `wasm32-unknown-unknown` target, `tr
 The URLs and keys never reach the browser; it only sees provider ids, model names and whether a
 model can look at images.
 
+## Web search
+
+The agent can search the web and read pages (`web_search`, `web_fetch`), run here on the server.
+DuckDuckGo needs no key; set `[web]` in `config.toml` for SearXNG (`search = "searxng"`,
+`base_url`), Brave or Tavily (`api_key`), or `enabled = false` to turn it off. `web_fetch` reads
+public http(s) pages only: local and private addresses are refused, on every redirect too.
+
+## Fonts on demand
+
+`scripts/fetch-fonts.py` downloads 36 SIL OFL families (Inter, Montserrat, Lato, Merriweather…,
+plus Carlito, Caladea, Arimo, Tinos and Cousine, metric-compatible with Calibri, Cambria, Arial,
+Times New Roman and Courier New) into `server/fonts/`. The server serves them at `/fonts/`; the
+web editor lists them in the font menu and loads a family when a deck uses it.
+
+## Workspace folders
+
+In the agent pane's Files tab (Chromium browsers), a presentation can get a workspace folder:
+briefs, notes, data, pictures, draft decks and templates. The person can open decks, insert
+pictures and apply a template's design from it; the agent lists and reads its files (PDFs are
+turned into text here on the server), inserts its pictures and applies its templates. An
+`AGENT.md` at the folder's root holds project instructions sent with every request. Each
+presentation has its own folder (a new one starts without); files never leave the browser except
+what the agent reads. Try `examples/workspace-demo/`.
+
 ## Users
 
 ```sh
