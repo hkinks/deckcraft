@@ -265,5 +265,38 @@ fn new_conversation_clears_the_chat_and_tells_the_server() {
     run_until_idle(&mut app, &ctx);
     client::new_conversation(&mut app);
     assert!(app.agent.as_ref().unwrap().state.items.is_empty());
+    assert_eq!(app.agent.as_ref().unwrap().state.turns.len(), 1, "the change log stays");
     assert_eq!(wire.sent_of("new_conversation").len(), 1);
+}
+
+#[test]
+fn turn_card_records_changed_slides_and_plain_language_edits() {
+    let (mut app, ctx, wire) = setup();
+    let n = doc(&app).slides.len();
+    client::send_prompt(&mut app, "add one");
+    wire.push(call("t1", "slide.new", json!({"layout": "title"})));
+    wire.push(ServerMsg::TurnEnd { turn_id: "t".into(), summary: String::new(), actions: vec!["slide.new".into(), "format.bold".into(), "format.bold".into()], slides: vec![], status: "ok".into() });
+    run_until_idle(&mut app, &ctx);
+    let card = &app.agent.as_ref().unwrap().state.turns[0];
+    assert_eq!(card.slides, vec![n], "the new slide is the changed one (0-based)");
+    assert_eq!(card.added, 1);
+    assert_eq!(card.removed, 0);
+    assert_eq!(card.prompt, "add one");
+    let bold = deckcraft_engine::cmd::find_command("format.bold").unwrap().label;
+    let new = deckcraft_engine::cmd::find_command("slide.new").unwrap().label;
+    assert_eq!(client::edit_labels(&card.actions), vec![new.to_string(), format!("{bold} ×2")]);
+}
+
+#[test]
+fn new_chat_keeps_the_change_log() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "x");
+    wire.push(call("t1", "slide.new", json!({})));
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    client::new_conversation(&mut app);
+    let st = &app.agent.as_ref().unwrap().state;
+    assert!(st.items.is_empty());
+    assert_eq!(st.turns.len(), 1);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
 }

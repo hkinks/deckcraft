@@ -30,9 +30,18 @@ pub enum ChatItem {
 pub struct TurnCard {
     pub turn_id: String,
     pub label: String,
+    /// The user's request.
+    pub prompt: String,
+    /// Command ids of the edits (read-only lookups excluded by the server).
     pub actions: Vec<String>,
     pub status: String,
     pub uid: u64,
+    /// When the turn ended (ms since the epoch); `None` for turns from an earlier page.
+    pub time: Option<f64>,
+    /// Slides the turn added or changed, 0-based positions in the deck after it.
+    pub slides: Vec<usize>,
+    pub added: usize,
+    pub removed: usize,
     /// The deck before and after the turn; `None` for turns restored from history.
     pub before: Option<Arc<Presentation>>,
     pub after: Option<Arc<Presentation>>,
@@ -59,9 +68,17 @@ struct Snapshot {
     after: Arc<Presentation>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaneTab {
+    #[default]
+    Chat,
+    Changes,
+}
+
 #[derive(Debug)]
 pub struct AgentState {
     pub open: bool,
+    pub tab: PaneTab,
     pub items: Vec<ChatItem>,
     pub turns: Vec<TurnCard>,
     pub turn: TurnState,
@@ -92,6 +109,7 @@ impl Default for AgentState {
     fn default() -> Self {
         Self {
             open: true,
+            tab: PaneTab::Chat,
             items: vec![],
             turns: vec![],
             turn: TurnState::Idle,
@@ -146,6 +164,40 @@ pub fn busy(app: &SlideApp) -> bool {
     app.agent.as_ref().is_some_and(|a| matches!(a.state.turn, TurnState::Running { .. }))
 }
 
+/// Which slides `after` added or changed relative to `before` (0-based positions in `after`),
+/// how many it added, and how many of `before`'s slides are gone.
+fn slide_diff(before: &Presentation, after: &Presentation) -> (Vec<usize>, usize, usize) {
+    let old: HashMap<_, _> = before.slides.iter().map(|s| (s.id, s)).collect();
+    let mut changed = vec![];
+    let mut added = 0;
+    for (i, s) in after.slides.iter().enumerate() {
+        match old.get(&s.id) {
+            None => {
+                added += 1;
+                changed.push(i);
+            }
+            Some(o) if !Arc::ptr_eq(o, s) => changed.push(i),
+            Some(_) => {}
+        }
+    }
+    let kept: std::collections::HashSet<_> = after.slides.iter().map(|s| s.id).collect();
+    let removed = before.slides.iter().filter(|s| !kept.contains(&s.id)).count();
+    (changed, added, removed)
+}
+
+/// The edits in words: each command's menu label, repeats counted ("Bold ×2"), in order.
+pub fn edit_labels(actions: &[String]) -> Vec<String> {
+    let mut out: Vec<(String, usize)> = vec![];
+    for a in actions {
+        let label = deckcraft_engine::cmd::find_command(a).map(|c| c.label.to_string()).unwrap_or_else(|| a.replace(['_', '.'], " "));
+        match out.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, n)) => *n += 1,
+            None => out.push((label, 1)),
+        }
+    }
+    out.into_iter().map(|(l, n)| if n > 1 { format!("{l} ×{n}") } else { l }).collect()
+}
+
 fn last_user(items: &[ChatItem]) -> String {
     items.iter().rev().find_map(|i| if let ChatItem::User(s) = i { Some(s.clone()) } else { None }).unwrap_or_default()
 }
@@ -196,6 +248,10 @@ fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, ac
     let changed = app.session.squash_undo_since(uid, &before, &label);
     let after = app.session.documents().iter().find(|d| d.uid == uid).map(|d| d.doc.clone());
     let changed = changed || after.as_ref().is_some_and(|a| !Arc::ptr_eq(a, &before));
+    let (slides, added, removed) = match &after {
+        Some(a) if changed => slide_diff(&before, a),
+        _ => (vec![], 0, 0),
+    };
     let (before, after) = match after {
         Some(after) if changed => {
             if !turn_id.is_empty() {
@@ -205,7 +261,8 @@ fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, ac
         }
         _ => (None, None),
     };
-    client.state.turns.push(TurnCard { turn_id, label, actions, status, uid, before, after });
+    let prompt = last_user(&client.state.items);
+    client.state.turns.push(TurnCard { turn_id, label, prompt, actions, status, uid, time: Some(crate::now_ms()), slides, added, removed, before, after });
     client.state.items.push(ChatItem::Turn(client.state.turns.len() - 1));
 }
 
@@ -213,7 +270,6 @@ fn open_conversation(app: &SlideApp, client: &mut AgentClient) {
     let Some((uid, key)) = deck_key(app, &mut client.state.deck_keys) else { return };
     client.state.conversation_uid = Some(uid);
     client.state.items.clear();
-    client.state.turns.clear();
     client.send(ClientMsg::OpenConversation { v: VERSION, deck_key: key });
 }
 
@@ -256,7 +312,7 @@ fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
         }
         ServerMsg::History { items, .. } => {
             client.state.items.clear();
-            client.state.turns.clear();
+            let uid = client.state.conversation_uid.unwrap_or(0);
             for it in items {
                 if it.role == "user" {
                     client.state.items.push(ChatItem::User(it.text));
@@ -265,18 +321,31 @@ fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
                         client.state.items.push(ChatItem::Assistant(it.text));
                     }
                     if let Some(t) = it.turn {
-                        // Turns made since this page opened can still be reverted.
-                        let snap = client.state.snapshots.get(&t.turn_id).cloned();
-                        client.state.turns.push(TurnCard {
-                            label: format!("AI: {}", first_line(&last_user(&client.state.items))),
-                            turn_id: t.turn_id,
-                            actions: t.actions,
-                            status: t.status,
-                            uid: snap.as_ref().map_or(0, |s| s.uid),
-                            before: snap.as_ref().map(|s| s.before.clone()),
-                            after: snap.map(|s| s.after),
-                        });
-                        client.state.items.push(ChatItem::Turn(client.state.turns.len() - 1));
+                        // A turn already in the change log (made since this page opened) keeps
+                        // its card, snapshots and all.
+                        let i = match client.state.turns.iter().position(|c| !t.turn_id.is_empty() && c.turn_id == t.turn_id) {
+                            Some(i) => i,
+                            None => {
+                                let prompt = last_user(&client.state.items);
+                                let snap = client.state.snapshots.get(&t.turn_id).cloned();
+                                client.state.turns.push(TurnCard {
+                                    label: format!("AI: {}", first_line(&prompt)),
+                                    prompt,
+                                    turn_id: t.turn_id,
+                                    actions: t.actions,
+                                    status: t.status,
+                                    uid: snap.as_ref().map_or(uid, |s| s.uid),
+                                    time: None,
+                                    slides: t.slides,
+                                    added: 0,
+                                    removed: 0,
+                                    before: snap.as_ref().map(|s| s.before.clone()),
+                                    after: snap.map(|s| s.after),
+                                });
+                                client.state.turns.len() - 1
+                            }
+                        };
+                        client.state.items.push(ChatItem::Turn(i));
                     }
                 }
             }
@@ -399,8 +468,8 @@ pub fn new_conversation(app: &mut SlideApp) {
     if matches!(client.state.turn, TurnState::Running { .. }) {
         return;
     }
+    // The chat starts over; the change log (and Revert) stays.
     client.state.items.clear();
-    client.state.turns.clear();
     client.state.confirm_revert = None;
     client.transport.send(&ClientMsg::NewConversation { v: VERSION });
 }
