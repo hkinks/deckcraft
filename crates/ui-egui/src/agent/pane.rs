@@ -126,13 +126,12 @@ fn tabs(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
             a.state.tab = PaneTab::Changes;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if !busy
-                && ui
-                    .add(egui::Button::new(RichText::new("✚ New chat").color(t.text_dim)).frame(false))
-                    .on_hover_text("Start a new conversation about this deck (the change log stays)")
-                    .clicked()
-            {
-                new_chat = true;
+            if !busy {
+                let r = ui.add(egui::Button::new(RichText::new("✚").color(t.text_dim)).frame(false));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New chat"));
+                if r.on_hover_text("New chat: start a new conversation about this deck (the change log stays)").clicked() {
+                    new_chat = true;
+                }
             }
         });
     });

@@ -168,3 +168,12 @@ fn pane_leaves_room_for_the_slide_in_a_narrow_window() {
     let title = h.get_by_role_and_label(egui::accesskit::Role::Label, "AI Agent").rect();
     assert!(title.left() >= 700.0 * 0.55 - 12.0, "pane starts at {}", title.left());
 }
+
+#[test]
+fn new_chat_button_clears_the_chat() {
+    let (mut h, wire) = after_turn("x");
+    h.get_by_label("New chat").click();
+    h.run_steps(2);
+    assert!(h.state().agent.as_ref().unwrap().state.items.is_empty());
+    assert_eq!(wire.sent_of("new_conversation").len(), 1);
+}
