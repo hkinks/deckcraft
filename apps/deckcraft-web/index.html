@@ -61,31 +61,32 @@
     })();
   </script>
   <script>
-    // The workspace folder (see crates/ui-egui/src/workspace.rs), through the File System Access
-    // API (Chromium). The folder's handle is kept in IndexedDB, so the next visit can offer to
-    // read it again (the browser asks the person first). Read-only.
+    // Workspace folders (see crates/ui-egui/src/workspace.rs), through the File System Access
+    // API (Chromium). Each presentation has its own folder, kept under the deck's key in
+    // IndexedDB, so it comes back with the deck on the next visit (the browser asks the person
+    // first). Read-only.
     window.deckcraftWorkspace = (() => {
       const supported = typeof window.showDirectoryPicker === "function";
-      let handle = null;
+      const handles = new Map();
       const db = () => new Promise((res, rej) => {
         const r = indexedDB.open("deckcraft-workspace", 1);
         r.onupgradeneeded = () => r.result.createObjectStore("h");
         r.onsuccess = () => res(r.result);
         r.onerror = () => rej(r.error);
       });
-      const store = async h => {
+      const store = async (key, h) => {
         const d = await db();
         await new Promise((res, rej) => {
           const t = d.transaction("h", "readwrite");
-          if (h) t.objectStore("h").put(h, "dir"); else t.objectStore("h").delete("dir");
+          if (h) t.objectStore("h").put(h, key); else t.objectStore("h").delete(key);
           t.oncomplete = res;
           t.onerror = () => rej(t.error);
         });
       };
-      const stored = async () => {
+      const stored = async key => {
         const d = await db();
         return new Promise((res, rej) => {
-          const q = d.transaction("h").objectStore("h").get("dir");
+          const q = d.transaction("h").objectStore("h").get(key);
           q.onsuccess = () => res(q.result || null);
           q.onerror = () => rej(q.error);
         });
@@ -101,36 +102,46 @@
           else out.push({ path: prefix + name, size: (await h.getFile()).size });
         }
       }
-      async function fileAt(path) {
+      async function fileAt(key, path) {
         const parts = path.split("/");
-        let dir = handle;
+        let dir = handles.get(key);
         for (const seg of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(seg);
         return (await dir.getFileHandle(parts[parts.length - 1])).getFile();
       }
       return {
         supported,
-        pick: async () => {
-          handle = await window.showDirectoryPicker({ mode: "read", id: "deckcraft-workspace" });
-          await store(handle);
-          return handle.name;
+        pick: async key => {
+          const h = await window.showDirectoryPicker({ mode: "read", id: "deckcraft-workspace" });
+          handles.set(key, h);
+          await store(key, h);
+          return h.name;
         },
-        // {name, granted} for the folder chosen on an earlier visit, or null.
-        remembered: async () => {
+        // {name, granted} for the folder this deck had on an earlier visit, or null.
+        remembered: async key => {
           if (!supported) return null;
-          const h = await stored();
+          const h = await stored(key);
           if (!h) return null;
-          handle = h;
-          return { name: h.name, granted: (await h.queryPermission({ mode: "read" })) === "granted" };
+          handles.set(key, h);
+          const granted = typeof h.queryPermission !== "function" || (await h.queryPermission({ mode: "read" })) === "granted";
+          return { name: h.name, granted };
         },
-        reconnect: async () => handle && (await handle.requestPermission({ mode: "read" })) === "granted",
-        forget: async () => { handle = null; await store(null); },
-        list: async () => {
+        reconnect: async key => {
+          const h = handles.get(key);
+          return !!h && (typeof h.requestPermission !== "function" || (await h.requestPermission({ mode: "read" })) === "granted");
+        },
+        // Another deck (opened from this folder) gets the same folder.
+        share: async (from, to) => {
+          const h = handles.get(from);
+          if (h) { handles.set(to, h); await store(to, h); }
+        },
+        forget: async key => { handles.delete(key); await store(key, null); },
+        list: async key => {
           const out = [];
-          await walk(handle, "", out);
+          await walk(handles.get(key), "", out);
           out.sort((a, b) => a.path.localeCompare(b.path));
           return out;
         },
-        read: async path => new Uint8Array(await (await fileAt(path)).arrayBuffer()),
+        read: async (key, path) => new Uint8Array(await (await fileAt(key, path)).arrayBuffer()),
       };
     })();
   </script>

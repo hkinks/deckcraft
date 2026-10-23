@@ -58,7 +58,7 @@ pub fn needs(app: &SlideApp, name: &str, input: &Value) -> Need {
     if name == "list_workspace_files" {
         return Need::Nothing;
     }
-    let (Some(ws), Some(path)) = (app.workspace.as_ref(), path_arg(input)) else { return Need::Nothing };
+    let (Some(ws), Some(path)) = (app.workspace(), path_arg(input)) else { return Need::Nothing };
     if ws.cache.contains_key(&path) {
         return Need::Nothing;
     }
@@ -74,7 +74,7 @@ fn text(s: impl Into<String>) -> Vec<ContentPart> {
 
 /// Run a workspace tool (its file, if it needs one, is in the cache).
 pub fn run(app: &mut SlideApp, ctx: &egui::Context, uid: Option<u64>, name: &str, input: &Value, vision: bool) -> (bool, Vec<ContentPart>) {
-    let Some(ws) = app.workspace.as_ref() else {
+    let Some(ws) = app.workspace() else {
         return (false, text("No workspace folder is open. The user can open one in the agent pane's Files tab."));
     };
     let folder = match ws.host.status() {

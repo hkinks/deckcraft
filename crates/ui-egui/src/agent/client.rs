@@ -280,7 +280,7 @@ fn deck_context(app: &SlideApp, key: String) -> DeckContext {
 }
 
 fn workspace_context(app: &SlideApp) -> Option<super::protocol::WorkspaceContext> {
-    let ws = app.workspace.as_ref()?;
+    let ws = app.workspace()?;
     let name = ws.folder_name()?;
     let files = ws.host.files();
     Some(super::protocol::WorkspaceContext {
@@ -301,7 +301,7 @@ fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, ac
     client.state.pending.clear();
     client.state.waiting_file = None;
     // Files the agent read go with the turn; ones the person is waiting on stay.
-    if let Some(ws) = app.workspace.as_mut() {
+    if let Some(ws) = app.workspace_mut() {
         let keep: std::collections::HashSet<String> = ws.user_ops.iter().map(|(p, _)| p.clone()).collect();
         ws.cache.retain(|p, _| keep.contains(p));
     }
@@ -374,7 +374,7 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
     let uid = *uid;
     // A workspace tool whose file isn't read yet waits for it (and runs again when it's in).
     if let super::workspace_tools::Need::File(path) = super::workspace_tools::needs(app, &name, &input) {
-        if let Some(ws) = app.workspace.as_mut() {
+        if let Some(ws) = app.workspace_mut() {
             ws.want(&path);
         }
         client.state.waiting_file = Some(path);
@@ -604,7 +604,7 @@ pub fn tick(app: &mut SlideApp, ctx: &egui::Context) {
         open_conversation(app, &mut client);
     }
     if let Some(path) = &client.state.waiting_file {
-        let ws = app.workspace.as_ref();
+        let ws = app.workspace();
         let arrived = ws.is_none_or(|w| w.cache.contains_key(path) || !w.reading.contains(path));
         if arrived {
             client.state.waiting_file = None;

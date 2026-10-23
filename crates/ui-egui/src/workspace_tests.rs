@@ -60,3 +60,71 @@ fn sizes_read_like_a_file_manager() {
     assert_eq!(size_label(12 * 1024), "12 KB");
     assert_eq!(size_label(3 * 1_048_576 + 100_000), "3.1 MB");
 }
+
+mod per_deck {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use deckcraft_engine::Session;
+    use serde_json::json;
+
+    use crate::workspace::{UserOp, WorkspaceHost};
+    use crate::workspace_fake::FakeHost;
+    use crate::{Services, SlideApp};
+
+    /// A factory whose hosts start without a folder, recording the keys asked for.
+    fn app_with_factory() -> (SlideApp, Rc<RefCell<Vec<String>>>) {
+        let mut app = SlideApp::new(Session::with_new(), Services::default());
+        let keys: Rc<RefCell<Vec<String>>> = Rc::default();
+        let k = keys.clone();
+        app.set_workspace_factory(Box::new(move |key: &str| {
+            k.borrow_mut().push(key.to_string());
+            Box::new(FakeHost::default()) as Box<dyn WorkspaceHost>
+        }));
+        app.workspace_tick();
+        (app, keys)
+    }
+
+    #[test]
+    fn a_new_presentation_starts_without_the_other_decks_folder() {
+        let (mut app, _) = app_with_factory();
+        app.set_workspace_host(Box::new(FakeHost::with(&[("brief.md", b"x")])));
+        assert_eq!(app.workspace().and_then(|w| w.folder_name()).as_deref(), Some("Launch"));
+        app.run("file.new", json!({})).unwrap();
+        app.workspace_tick();
+        assert!(app.workspace().is_some_and(|w| w.folder_name().is_none()), "the new deck has no folder");
+        // Back on the first deck, its folder is still there.
+        app.session.set_active(0);
+        app.workspace_tick();
+        assert_eq!(app.workspace().and_then(|w| w.folder_name()).as_deref(), Some("Launch"));
+    }
+
+    #[test]
+    fn a_deck_opened_from_the_workspace_joins_it() {
+        let (mut app, _) = app_with_factory();
+        let mut s = Session::with_new();
+        s.execute("slide.new", &json!({"title": "Draft"})).unwrap();
+        let bytes = deckcraft_format::save(&s.active().unwrap().doc).unwrap();
+        let host = FakeHost::with(&[("drafts/v1.deckcraft", &bytes)]);
+        host.0.borrow_mut().instant = true;
+        app.set_workspace_host(Box::new(host));
+        let first = app.session.active().unwrap().uid;
+        app.workspace_action("drafts/v1.deckcraft", UserOp::Open);
+        app.workspace_tick();
+        app.workspace_tick();
+        let now = app.session.active().unwrap().uid;
+        assert_ne!(now, first, "the draft opened");
+        assert_eq!(app.workspace().and_then(|w| w.folder_name()).as_deref(), Some("Launch"));
+    }
+
+    #[test]
+    fn closed_decks_drop_their_workspace() {
+        let (mut app, _) = app_with_factory();
+        app.run("file.new", json!({})).unwrap();
+        app.workspace_tick();
+        assert_eq!(app.workspaces.len(), 2);
+        app.run("file.close", json!({})).ok();
+        app.workspace_tick();
+        assert_eq!(app.workspaces.len(), app.session.documents().len());
+    }
+}

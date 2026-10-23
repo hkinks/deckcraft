@@ -451,8 +451,9 @@ pub struct SlideApp {
     pub autosave: Option<autosave::Autosave>,
     /// Fonts on demand from the agent server's catalog (web).
     pub webfonts: Option<webfonts::WebFonts>,
-    /// The person's workspace folder (materials for them and the agent).
-    pub workspace: Option<workspace::Workspace>,
+    /// Each open deck's workspace folder (materials for the person and the agent), by document.
+    pub workspaces: std::collections::HashMap<u64, workspace::Workspace>,
+    pub workspace_factory: Option<workspace::WorkspaceFactory>,
     /// Spelling squiggles, checked on a worker thread.
     pub squiggles: squiggles::Squiggles,
     pub dialog: Option<dialogs::Dialog>,
@@ -555,7 +556,8 @@ impl SlideApp {
             agent: None,
             autosave: None,
             webfonts: None,
-            workspace: None,
+            workspaces: Default::default(),
+            workspace_factory: None,
             squiggles: Default::default(),
             dialog: None,
             thesaurus_query: String::new(),

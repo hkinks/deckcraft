@@ -170,7 +170,7 @@ fn deck_turns(app: &SlideApp) -> Vec<(usize, TurnCard)> {
 /// Underline tabs: Chat | Changes (n).
 fn tabs(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let n = deck_turns(app).len();
-    let has_files = app.workspace.is_some();
+    let has_files = app.has_workspaces();
     let Some(a) = app.agent.as_mut() else { return };
     let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
@@ -621,7 +621,7 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
 /// The workspace folder: its files, with what each can be used for.
 fn files(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     use crate::workspace::{Kind, UserOp, WsStatus, kind_of, size_label};
-    let Some(ws) = app.workspace.as_ref() else { return };
+    let Some(ws) = app.workspace() else { return };
     let status = ws.host.status();
     let mut pick = false;
     let mut reconnect = false;
@@ -793,7 +793,7 @@ fn files(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
             }
         }
     }
-    if let Some(ws) = app.workspace.as_mut() {
+    if let Some(ws) = app.workspace_mut() {
         if pick {
             ws.host.pick();
         }

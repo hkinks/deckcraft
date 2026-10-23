@@ -1,6 +1,7 @@
 //! [`WorkspaceHost`] over the browser's File System Access API, through the
-//! `window.deckcraftWorkspace` helper in `index.html`. Chromium only: elsewhere there is no
-//! host and the agent pane has no Files tab.
+//! `window.deckcraftWorkspace` helper in `index.html`: one per presentation, its folder
+//! remembered under the deck's key. Chromium only: elsewhere there is no host and the agent pane
+//! has no Files tab.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,6 +21,8 @@ struct Inner {
 pub struct WebWorkspace {
     inner: Rc<RefCell<Inner>>,
     ctx: egui::Context,
+    /// The deck's key: which folder it has.
+    key: String,
 }
 
 fn helper() -> Option<JsValue> {
@@ -45,16 +48,18 @@ async fn call(method: &str, args: &[JsValue]) -> Result<JsValue, String> {
     })
 }
 
+/// Can this browser open folders?
+pub fn supported() -> bool {
+    helper().is_some_and(|h| field(&h, "supported").as_bool() == Some(true))
+}
+
 impl WebWorkspace {
-    /// None where the browser can't open folders.
-    pub fn new(ctx: egui::Context) -> Option<Self> {
-        if !helper().is_some_and(|h| field(&h, "supported").as_bool() == Some(true)) {
-            return None;
-        }
-        let ws = Self { inner: Rc::new(RefCell::new(Inner { status: Some(WsStatus::None), ..Default::default() })), ctx };
+    /// The workspace of the deck with `key` (its folder from an earlier visit, if it had one).
+    pub fn new(ctx: egui::Context, key: &str) -> Self {
+        let ws = Self { inner: Rc::new(RefCell::new(Inner { status: Some(WsStatus::None), ..Default::default() })), ctx, key: key.to_string() };
         let me = ws.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match call("remembered", &[]).await {
+            match call("remembered", &[me.k()]).await {
                 Ok(v) if !v.is_null() && !v.is_undefined() => {
                     let name = field(&v, "name").as_string().unwrap_or_default();
                     if field(&v, "granted").as_bool() == Some(true) {
@@ -67,7 +72,11 @@ impl WebWorkspace {
                 Err(e) => log::warn!("workspace: {e}"),
             }
         });
-        Some(ws)
+        ws
+    }
+
+    fn k(&self) -> JsValue {
+        JsValue::from_str(&self.key)
     }
 
     fn set(&self, s: WsStatus) {
@@ -77,7 +86,7 @@ impl WebWorkspace {
 
     async fn list(&self, name: String) {
         self.set(WsStatus::Loading { name: name.clone() });
-        match call("list", &[]).await {
+        match call("list", &[self.k()]).await {
             Ok(v) => {
                 let files = js_sys::Array::from(&v)
                     .iter()
@@ -107,7 +116,7 @@ impl WorkspaceHost for WebWorkspace {
     fn pick(&mut self) {
         let me = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match call("pick", &[]).await {
+            match call("pick", &[me.k()]).await {
                 Ok(v) => me.list(v.as_string().unwrap_or_default()).await,
                 // Dismissing the picker isn't an error.
                 Err(e) if e.contains("abort") => {}
@@ -120,7 +129,7 @@ impl WorkspaceHost for WebWorkspace {
         let me = self.clone();
         let name = self.name().unwrap_or_default();
         wasm_bindgen_futures::spawn_local(async move {
-            match call("reconnect", &[]).await {
+            match call("reconnect", &[me.k()]).await {
                 Ok(v) if v.as_bool() == Some(true) => me.list(name).await,
                 Ok(_) => me.set(WsStatus::NeedsPermission { name }),
                 Err(e) => me.set(WsStatus::Failed(e)),
@@ -134,8 +143,9 @@ impl WorkspaceHost for WebWorkspace {
             inner.files.clear();
             inner.status = Some(WsStatus::None);
         }
+        let key = self.k();
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = call("forget", &[]).await;
+            let _ = call("forget", &[key]).await;
         });
         self.ctx.request_repaint();
     }
@@ -155,7 +165,7 @@ impl WorkspaceHost for WebWorkspace {
         let me = self.clone();
         let path = path.to_string();
         wasm_bindgen_futures::spawn_local(async move {
-            let r = call("read", &[JsValue::from_str(&path)]).await.map(|v| js_sys::Uint8Array::new(&v).to_vec());
+            let r = call("read", &[me.k(), JsValue::from_str(&path)]).await.map(|v| js_sys::Uint8Array::new(&v).to_vec());
             me.inner.borrow_mut().reads.push((path, r));
             me.ctx.request_repaint();
         });
@@ -163,5 +173,18 @@ impl WorkspaceHost for WebWorkspace {
 
     fn poll_reads(&mut self) -> Vec<(String, Result<Vec<u8>, String>)> {
         std::mem::take(&mut self.inner.borrow_mut().reads)
+    }
+
+    fn share(&self, key: &str) -> Box<dyn WorkspaceHost> {
+        // The new deck's own host, over the same folder (listing it again is cheap).
+        let other = WebWorkspace::new(self.ctx.clone(), key);
+        let (from, to, me) = (self.k(), JsValue::from_str(key), other.clone());
+        let name = self.name().unwrap_or_default();
+        wasm_bindgen_futures::spawn_local(async move {
+            if call("share", &[from, to]).await.is_ok() {
+                me.list(name).await;
+            }
+        });
+        Box::new(other)
     }
 }

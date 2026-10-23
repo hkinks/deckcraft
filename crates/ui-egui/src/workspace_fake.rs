@@ -52,6 +52,9 @@ impl WorkspaceHost for FakeHost {
         fs.asked.push(path.to_string());
         fs.pending.push(path.to_string());
     }
+    fn share(&self, _key: &str) -> Box<dyn WorkspaceHost> {
+        Box::new(self.clone())
+    }
     fn poll_reads(&mut self) -> Vec<(String, Result<Vec<u8>, String>)> {
         let mut fs = self.0.borrow_mut();
         if !fs.instant {

@@ -4,6 +4,10 @@
 //!
 //! An `AGENT.md` (or `agent.md`, `DECKCRAFT.md`) at the folder's root holds project instructions
 //! that go with every request to the agent.
+//!
+//! A workspace belongs to a presentation: each open deck has its own folder (or none), a new
+//! presentation starts without one, and a deck opened from a workspace joins it. The host
+//! remembers a deck's folder under its key (its file name), so it comes back next time.
 
 use std::collections::HashMap;
 
@@ -44,6 +48,21 @@ pub trait WorkspaceHost {
     fn read(&mut self, path: &str);
     /// Reads that finished since the last call: (path, bytes or error).
     fn poll_reads(&mut self) -> Vec<(String, Result<Vec<u8>, String>)>;
+    /// The same folder for another deck (one opened from this workspace), remembered under its key.
+    fn share(&self, key: &str) -> Box<dyn WorkspaceHost>;
+}
+
+/// Makes the host for a deck, given its key (which folder it had before, if any).
+pub type WorkspaceFactory = Box<dyn Fn(&str) -> Box<dyn WorkspaceHost>>;
+
+/// The key a deck's workspace is remembered under: its file, or its name once it came from a
+/// file; a new, untitled presentation's workspace lasts for the session.
+pub fn workspace_key(d: &deckcraft_engine::DocState) -> String {
+    if let Some(p) = &d.path {
+        return format!("file:{p}");
+    }
+    let untitled = d.title.strip_prefix("Presentation").is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()));
+    if untitled { format!("doc:{:x}", d.uid) } else { format!("title:{}", d.title) }
 }
 
 /// The largest file the workspace reads.
@@ -228,50 +247,64 @@ impl Workspace {
 }
 
 impl crate::SlideApp {
+    /// How decks get their workspace host (the browser's folder access).
+    pub fn set_workspace_factory(&mut self, f: WorkspaceFactory) {
+        self.workspace_factory = Some(f);
+    }
+
+    /// Give the active deck this workspace host (tests; the app uses the factory).
     pub fn set_workspace_host(&mut self, host: Box<dyn WorkspaceHost>) {
-        self.workspace = Some(Workspace::new(host));
+        if let Some(uid) = self.session.active().map(|d| d.uid) {
+            self.workspaces.insert(uid, Workspace::new(host));
+        }
+    }
+
+    /// Whether this app can open workspace folders at all.
+    pub fn has_workspaces(&self) -> bool {
+        self.workspace_factory.is_some() || !self.workspaces.is_empty()
+    }
+
+    /// The active deck's workspace.
+    pub fn workspace(&self) -> Option<&Workspace> {
+        self.workspaces.get(&self.session.active()?.uid)
+    }
+
+    pub fn workspace_mut(&mut self) -> Option<&mut Workspace> {
+        let uid = self.session.active()?.uid;
+        self.workspaces.get_mut(&uid)
     }
 
     /// The person's action on a workspace file (done once it's read).
     pub fn workspace_action(&mut self, path: &str, op: UserOp) {
-        if let Some(ws) = self.workspace.as_mut() {
+        if let Some(ws) = self.workspace_mut() {
             ws.user_ops.push((path.to_string(), op));
             ws.want(path);
         }
     }
 
-    /// Collect finished reads, do the person's pending actions, and keep `AGENT.md` read.
+    /// Give the active deck its workspace host, collect finished reads, do the person's pending
+    /// actions, and keep each workspace's `AGENT.md` read.
     pub fn workspace_tick(&mut self) {
-        let Some(ws) = self.workspace.as_mut() else { return };
-        for (path, r) in ws.host.poll_reads() {
-            ws.reading.remove(&path);
-            ws.cache.insert(path, r);
+        let open: std::collections::HashSet<u64> = self.session.documents().iter().map(|d| d.uid).collect();
+        self.workspaces.retain(|uid, _| open.contains(uid));
+        if let (Some(f), Some(d)) = (self.workspace_factory.as_ref(), self.session.active())
+            && !self.workspaces.contains_key(&d.uid)
+        {
+            let host = f(&workspace_key(d));
+            self.workspaces.insert(d.uid, Workspace::new(host));
         }
-        // Project instructions: read AGENT.md whenever the folder (or the file) changes.
-        let files = ws.host.files();
-        let key = ws.folder_name().and_then(|n| instructions_file(&files).map(|f| format!("{n}/{}:{}", f.path, f.size)));
-        if key != ws.instructions_for {
-            ws.instructions = None;
-            ws.instructions_for = key.clone();
-            if let Some(f) = instructions_file(&files) {
-                let p = f.path.clone();
-                ws.cache.remove(&p);
-                ws.want(&p);
+        let mut done: Vec<(u64, String, UserOp, Result<Vec<u8>, String>)> = vec![];
+        for (uid, ws) in self.workspaces.iter_mut() {
+            ws.tick();
+            let (ready, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut ws.user_ops).into_iter().partition(|(p, _)| ws.cache.contains_key(p));
+            ws.user_ops = wait;
+            for (path, op) in ready {
+                if let Some(r) = ws.cache.remove(&path) {
+                    done.push((*uid, path, op, r));
+                }
             }
         }
-        if ws.instructions.is_none()
-            && let Some(f) = instructions_file(&files)
-            && let Some(Ok(b)) = ws.cache.get(&f.path)
-        {
-            ws.instructions = Some(String::from_utf8_lossy(b).chars().take(20_000).collect());
-        }
-        let ready: Vec<(String, UserOp)> = {
-            let (done, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut ws.user_ops).into_iter().partition(|(p, _)| ws.cache.contains_key(p));
-            ws.user_ops = wait;
-            done
-        };
-        for (path, op) in ready {
-            let Some(r) = self.workspace.as_mut().and_then(|ws| ws.cache.remove(&path)) else { continue };
+        for (uid, path, op, r) in done {
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             let result = r.and_then(|bytes| {
                 let data = deckcraft_engine::cmd::base64_encode(&bytes);
@@ -282,9 +315,46 @@ impl crate::SlideApp {
                 };
                 self.run(cmd, params).map(|_| ()).map_err(|e| e.to_string())
             });
-            if let Err(e) = result {
-                self.set_status(format!("{name}: {e}"));
+            match result {
+                // A deck opened from a workspace belongs to it.
+                Ok(()) if op == UserOp::Open => {
+                    if let (Some(from), Some(d)) = (self.workspaces.get(&uid), self.session.active())
+                        && d.uid != uid
+                    {
+                        let host = from.host.share(&workspace_key(d));
+                        self.workspaces.insert(d.uid, Workspace::new(host));
+                    }
+                }
+                Ok(()) => {}
+                Err(e) => self.set_status(format!("{name}: {e}")),
             }
+        }
+    }
+}
+
+impl Workspace {
+    /// Collect finished reads and keep `AGENT.md` read.
+    fn tick(&mut self) {
+        for (path, r) in self.host.poll_reads() {
+            self.reading.remove(&path);
+            self.cache.insert(path, r);
+        }
+        let files = self.host.files();
+        let key = self.folder_name().and_then(|n| instructions_file(&files).map(|f| format!("{n}/{}:{}", f.path, f.size)));
+        if key != self.instructions_for {
+            self.instructions = None;
+            self.instructions_for = key;
+            if let Some(f) = instructions_file(&files) {
+                let p = f.path.clone();
+                self.cache.remove(&p);
+                self.want(&p);
+            }
+        }
+        if self.instructions.is_none()
+            && let Some(f) = instructions_file(&files)
+            && let Some(Ok(b)) = self.cache.get(&f.path)
+        {
+            self.instructions = Some(String::from_utf8_lossy(b).chars().take(20_000).collect());
         }
     }
 }
