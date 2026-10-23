@@ -42,6 +42,8 @@ pub struct TurnCard {
     pub slides: Vec<usize>,
     pub added: usize,
     pub removed: usize,
+    /// Times the user edited the deck while the agent worked (Revert then asks first).
+    pub user_edits: usize,
     /// The deck before and after the turn; `None` for turns restored from history.
     pub before: Option<Arc<Presentation>>,
     pub after: Option<Arc<Presentation>>,
@@ -56,7 +58,20 @@ enum Pending {
 #[derive(Clone, Debug)]
 pub enum TurnState {
     Idle,
-    Running { uid: u64, before: Arc<Presentation>, label: String, stopping: bool, turn_id: Option<String> },
+    Running {
+        uid: u64,
+        /// The deck when the request was sent (what Revert goes back to).
+        before: Arc<Presentation>,
+        label: String,
+        stopping: bool,
+        turn_id: Option<String>,
+        /// The deck as the agent's last step left it: anything else is the user's doing.
+        agent_doc: Arc<Presentation>,
+        /// The session journal's length after the agent's last step (later entries are the user's).
+        journal_mark: usize,
+        /// How many times the user changed the deck during the turn.
+        user_edits: usize,
+    },
 }
 
 /// What a turn changed, kept for Revert while the page lives (across deck switches and
@@ -154,7 +169,6 @@ impl AgentClient {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RevertOutcome {
-    Undone,
     Replaced,
     NeedsConfirm,
     Unavailable,
@@ -236,18 +250,22 @@ fn deck_context(app: &SlideApp, key: String) -> DeckContext {
     }
 }
 
-/// Close the running turn: merge its undo steps and record a turn card.
+/// Close the running turn and record its card. Every step stays its own undo step.
 fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, actions: Vec<String>, status: String) {
-    let TurnState::Running { uid, before, label, turn_id: started, .. } = std::mem::replace(&mut client.state.turn, TurnState::Idle) else {
+    let TurnState::Running { uid, before, label, turn_id: started, agent_doc, journal_mark, mut user_edits, .. } =
+        std::mem::replace(&mut client.state.turn, TurnState::Idle)
+    else {
         return;
     };
     client.state.pending.clear();
     client.state.stop_at = None;
+    if user_changes(app, uid, &agent_doc, journal_mark).is_some() {
+        user_edits += 1;
+    }
     let turn_id = if turn_id.is_empty() { started.unwrap_or_default() } else { turn_id };
     let label = if status == "ok" { label } else { format!("{label} ({status})") };
-    let changed = app.session.squash_undo_since(uid, &before, &label);
     let after = app.session.documents().iter().find(|d| d.uid == uid).map(|d| d.doc.clone());
-    let changed = changed || after.as_ref().is_some_and(|a| !Arc::ptr_eq(a, &before));
+    let changed = after.as_ref().is_some_and(|a| !Arc::ptr_eq(a, &before));
     let (slides, added, removed) = match &after {
         Some(a) if changed => slide_diff(&before, a),
         _ => (vec![], 0, 0),
@@ -262,8 +280,33 @@ fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, ac
         _ => (None, None),
     };
     let prompt = last_user(&client.state.items);
-    client.state.turns.push(TurnCard { turn_id, label, prompt, actions, status, uid, time: Some(crate::now_ms()), slides, added, removed, before, after });
+    client.state.turns.push(TurnCard { turn_id, label, prompt, actions, status, uid, time: Some(crate::now_ms()), slides, added, removed, user_edits, before, after });
     client.state.items.push(ChatItem::Turn(client.state.turns.len() - 1));
+}
+
+/// What the user changed in document `uid` since the agent's last step left it as `agent_doc`,
+/// in words for the agent ("the user changed slides 2, 4 (Bold, New Slide)"); `None` if nothing.
+fn user_changes(app: &SlideApp, uid: u64, agent_doc: &Arc<Presentation>, journal_mark: usize) -> Option<String> {
+    let d = app.session.documents().iter().find(|d| d.uid == uid)?;
+    if Arc::ptr_eq(&d.doc, agent_doc) {
+        return None;
+    }
+    let (slides, added, removed) = slide_diff(agent_doc, &d.doc);
+    let ids: Vec<String> = app.session.journal.iter().skip(journal_mark.min(app.session.journal.len())).map(|(id, _)| id.clone()).collect();
+    let what = edit_labels(&ids);
+    let mut text = String::from("Note: while you were working, the user edited the deck themselves");
+    if !slides.is_empty() {
+        let list: Vec<String> = slides.iter().take(20).map(|i| (i + 1).to_string()).collect();
+        text.push_str(&format!(" (slide{} {})", if slides.len() == 1 { "" } else { "s" }, list.join(", ")));
+    }
+    if added > 0 || removed > 0 {
+        text.push_str(&format!(", adding {added} and removing {removed} slide(s)"));
+    }
+    if !what.is_empty() {
+        text.push_str(&format!(": {}", what.join(", ")));
+    }
+    text.push_str(". Their edits stand; inspect before changing those slides and don't undo them.");
+    Some(text)
 }
 
 fn open_conversation(app: &SlideApp, client: &mut AgentClient) {
@@ -279,11 +322,31 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
         return;
     };
     let uid = *uid;
-    let (ok, content) = if app.session.active().map(|d| d.uid) != Some(uid) {
-        (false, vec![ContentPart::Text { text: "the deck this turn was editing is no longer the active document".into() }])
+    let (ok, mut content, note) = if app.session.active().map(|d| d.uid) != Some(uid) {
+        (false, vec![ContentPart::Text { text: "the deck this turn was editing is no longer the active document".into() }], None)
     } else {
-        tools::execute_on(app, ctx, Some(uid), &name, &input, client.vision())
+        // Whatever the user did since the agent's last step is theirs: tell the agent.
+        let note = match &client.state.turn {
+            TurnState::Running { agent_doc, journal_mark, .. } => user_changes(app, uid, agent_doc, *journal_mark),
+            TurnState::Idle => None,
+        };
+        let pre = app.session.active().map(|d| d.doc.clone());
+        let (ok, content) = tools::execute_on(app, ctx, Some(uid), &name, &input, client.vision());
+        // Each of the agent's steps is its own undo step, marked as the agent's.
+        if let Some(pre) = &pre {
+            app.session.label_undo_since(uid, pre, "AI: ");
+        }
+        (ok, content, note)
     };
+    if let TurnState::Running { agent_doc, journal_mark, user_edits, .. } = &mut client.state.turn
+        && let Some(d) = app.session.documents().iter().find(|d| d.uid == uid)
+    {
+        *agent_doc = d.doc.clone();
+        *journal_mark = app.session.journal.len();
+        if note.is_some() {
+            *user_edits += 1;
+        }
+    }
     let summary = content
         .iter()
         .find_map(|c| match c {
@@ -295,6 +358,10 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
         "run_command" => input.get("command").and_then(Value::as_str).unwrap_or("run_command").to_string(),
         _ => name,
     };
+    if let Some(n) = note {
+        client.state.items.push(ChatItem::Notice("You edited the deck; the agent was told.".into()));
+        content.push(ContentPart::Text { text: n });
+    }
     client.state.items.push(ChatItem::Tool { name: label, ok, summary });
     client.send(ClientMsg::ToolResult { v: VERSION, id, ok, content });
 }
@@ -339,6 +406,7 @@ fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
                                     slides: t.slides,
                                     added: 0,
                                     removed: 0,
+                                    user_edits: 0,
                                     before: snap.as_ref().map(|s| s.before.clone()),
                                     after: snap.map(|s| s.after),
                                 });
@@ -444,7 +512,16 @@ pub fn send_prompt(app: &mut SlideApp, text: &str) {
         let before = d.doc.clone();
         let deck = deck_context(app, key);
         client.state.items.push(ChatItem::User(text.clone()));
-        client.state.turn = TurnState::Running { uid, before, label: format!("AI: {}", first_line(&text)), stopping: false, turn_id: None };
+        client.state.turn = TurnState::Running {
+            uid,
+            agent_doc: before.clone(),
+            before,
+            label: format!("AI: {}", first_line(&text)),
+            stopping: false,
+            turn_id: None,
+            journal_mark: app.session.journal.len(),
+            user_edits: 0,
+        };
         client.state.last_heard = crate::now_ms();
         client.state.conversation_uid = Some(uid);
         let provider = client.state.provider.clone();
@@ -474,8 +551,9 @@ pub fn new_conversation(app: &mut SlideApp) {
     client.transport.send(&ClientMsg::NewConversation { v: VERSION });
 }
 
-/// Revert turn `i`: Undo when it is the latest change, otherwise (after `confirmed`) put the deck
-/// back as it was before the turn, as one new undoable step.
+/// Revert turn `i`: put the deck back as it was before the request, as one undoable step. When
+/// the user edited during the turn, or the deck changed since, that would discard their work too,
+/// so it asks first (`confirmed`).
 pub fn revert(app: &mut SlideApp, i: usize, confirmed: bool) -> RevertOutcome {
     let Some(card) = app.agent.as_ref().and_then(|a| a.state.turns.get(i)).cloned() else { return RevertOutcome::Unavailable };
     let (Some(before), Some(after)) = (card.before, card.after) else { return RevertOutcome::Unavailable };
@@ -483,14 +561,8 @@ pub fn revert(app: &mut SlideApp, i: usize, confirmed: bool) -> RevertOutcome {
         return RevertOutcome::Unavailable;
     }
     let Some(d) = app.session.active().filter(|d| d.uid == card.uid) else { return RevertOutcome::Unavailable };
-    let latest = Arc::ptr_eq(&d.doc, &after) && d.history.undo.last().is_some_and(|e| Arc::ptr_eq(&e.doc, &before));
-    if latest {
-        return match app.run("edit.undo", json!({})) {
-            Ok(_) => RevertOutcome::Undone,
-            Err(_) => RevertOutcome::Unavailable,
-        };
-    }
-    if !confirmed {
+    let clean = Arc::ptr_eq(&d.doc, &after) && card.user_edits == 0;
+    if !clean && !confirmed {
         if let Some(a) = app.agent.as_mut() {
             a.state.confirm_revert = Some(i);
         }

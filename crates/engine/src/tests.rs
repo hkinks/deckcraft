@@ -4122,3 +4122,20 @@ fn replace_doc_installs_a_snapshot_as_one_undo_step() {
     assert!(Arc::ptr_eq(&s.active().unwrap().doc, &edited));
     assert!(!s.replace_doc(u64::MAX, before, "x"));
 }
+
+#[test]
+fn label_undo_since_prefixes_only_the_new_steps() {
+    let mut s = session();
+    let uid = s.active().unwrap().uid;
+    s.execute("slide.new", &json!({})).unwrap(); // the user's step
+    let before = s.active().unwrap().doc.clone();
+    s.execute("slide.new", &json!({})).unwrap();
+    s.execute("format.bold", &json!({})).ok();
+    s.execute("shape.insert", &json!({"preset": "rect", "rect": [1, 1, 10, 10]})).unwrap();
+    let n = s.label_undo_since(uid, &before, "AI: ");
+    let labels: Vec<_> = s.active().unwrap().history.undo.iter().map(|e| e.label.clone()).collect();
+    assert!(n >= 2);
+    assert!(!labels[labels.len() - n - 1].starts_with("AI: "), "the user's earlier step keeps its label");
+    assert!(labels[labels.len() - n..].iter().all(|l| l.starts_with("AI: ")));
+    assert_eq!(s.label_undo_since(uid, &s.active().unwrap().doc.clone(), "AI: "), 0);
+}

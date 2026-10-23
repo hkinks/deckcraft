@@ -563,6 +563,25 @@ impl Session {
         st.history.redo.clear();
         true
     }
+    /// Prefix the labels of the undo steps made in document `uid` since its presentation was
+    /// `before` (an agent's tool call: "AI: Bold"). Returns how many steps were labelled; 0 when
+    /// nothing changed or `before` is no longer in the history.
+    pub fn label_undo_since(&mut self, uid: u64, before: &Arc<Presentation>, prefix: &str) -> usize {
+        let Some(st) = self.docs.iter_mut().find(|d| d.uid == uid) else { return 0 };
+        if Arc::ptr_eq(&st.doc, before) {
+            return 0;
+        }
+        let Some(i) = st.history.undo.iter().rposition(|e| Arc::ptr_eq(&e.doc, before)) else { return 0 };
+        let mut n = 0;
+        for e in st.history.undo.iter_mut().skip(i) {
+            if !e.label.starts_with(prefix) {
+                e.label = format!("{prefix}{}", e.label);
+            }
+            n += 1;
+        }
+        n
+    }
+
     /// Make `doc` the presentation of document `uid` as one undo step labelled `label` (an agent
     /// turn's Revert: the snapshot keeps its media bytes, which a JSON round trip would not).
     /// False when the document is gone or already is `doc`.

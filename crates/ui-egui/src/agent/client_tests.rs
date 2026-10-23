@@ -56,7 +56,7 @@ fn doc(app: &SlideApp) -> Arc<deckcraft_model::Presentation> {
 }
 
 #[test]
-fn turn_with_two_tool_calls_is_one_undo_step() {
+fn each_agent_step_is_its_own_labelled_undo_step_and_revert_is_one() {
     let (mut app, ctx, wire) = setup();
     let before = doc(&app);
     let slides = before.slides.len();
@@ -65,6 +65,7 @@ fn turn_with_two_tool_calls_is_one_undo_step() {
     let um = wire.sent_of("user_message");
     assert_eq!(um[0]["deck"]["slides"], slides);
     assert_eq!(um[0]["provider"], "q");
+    let undo0 = app.session.active().unwrap().history.undo.len();
     wire.push(call("t1", "slide.new", json!({"layout": "title"})));
     wire.push(call("t2", "shape.insert", json!({"preset": "rect", "rect": [10, 10, 100, 60]})));
     client::tick(&mut app, &ctx);
@@ -75,11 +76,52 @@ fn turn_with_two_tool_calls_is_one_undo_step() {
     let results = wire.sent_of("tool_result");
     assert_eq!(results.len(), 2);
     assert!(results.iter().all(|r| r["ok"] == true), "{results:?}");
-    assert_eq!(doc(&app).slides.len(), slides + 1);
-    assert_eq!(app.session.active().unwrap().history.undo.last().unwrap().label, "AI: add a slide");
+    let undo = &app.session.active().unwrap().history.undo;
+    assert_eq!(undo.len(), undo0 + 2, "each agent step is atomic");
+    assert!(undo[undo0..].iter().all(|e| e.label.starts_with("AI: ")), "{:?}", undo.iter().map(|e| &e.label).collect::<Vec<_>>());
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Replaced);
+    assert!(Arc::ptr_eq(&doc(&app), &before), "Revert puts the whole request back in one step");
     app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(doc(&app).slides.len(), slides + 1);
+}
+
+#[test]
+fn user_edit_during_a_turn_is_its_own_step_and_the_agent_is_told() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "work on it");
+    wire.push(call("t1", "slide.new", json!({})));
+    client::tick(&mut app, &ctx);
+    // The person adds a slide of their own while the agent works.
+    app.run("slide.new", json!({"layout": "title"})).unwrap();
+    let user_label = app.session.active().unwrap().history.undo.last().unwrap().label.clone();
+    assert!(!user_label.starts_with("AI: "), "{user_label}");
+    wire.push(call("t2", "shape.insert", json!({"preset": "rect", "rect": [1, 1, 50, 50]})));
+    client::tick(&mut app, &ctx);
+    let r = wire.sent_of("tool_result");
+    let note = r[1]["content"].as_array().unwrap().iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
+    assert!(note.contains("the user"), "{note}");
+    assert!(note.contains("New Slide"), "{note}");
+    let undo = &app.session.active().unwrap().history.undo;
+    let labels: Vec<_> = undo.iter().rev().take(3).map(|e| e.label.clone()).collect();
+    assert!(labels[0].starts_with("AI: ") && !labels[1].starts_with("AI: ") && labels[2].starts_with("AI: "), "{labels:?}");
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    assert_eq!(app.agent.as_ref().unwrap().state.turns[0].user_edits, 1);
+}
+
+#[test]
+fn revert_of_a_turn_with_user_edits_asks_first() {
+    let (mut app, ctx, wire) = setup();
+    let before = doc(&app);
+    client::send_prompt(&mut app, "x");
+    wire.push(call("t1", "slide.new", json!({})));
+    client::tick(&mut app, &ctx);
+    app.run("slide.new", json!({})).unwrap();
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::NeedsConfirm);
+    assert_eq!(client::revert(&mut app, 0, true), RevertOutcome::Replaced);
     assert!(Arc::ptr_eq(&doc(&app), &before));
-    assert_eq!(app.agent.as_ref().unwrap().state.turns.len(), 1);
 }
 
 #[test]
@@ -90,7 +132,7 @@ fn revert_latest_turn_undoes() {
     wire.push(call("t1", "slide.new", json!({})));
     wire.push(end("turn-1"));
     run_until_idle(&mut app, &ctx);
-    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Replaced);
     assert!(Arc::ptr_eq(&doc(&app), &before));
 }
 
@@ -111,7 +153,7 @@ fn revert_older_turn_needs_confirmation_then_replaces_document() {
 }
 
 #[test]
-fn disconnect_mid_turn_unlocks_and_squashes_interrupted() {
+fn disconnect_mid_turn_unlocks_and_records_interrupted() {
     let (mut app, ctx, wire) = setup();
     client::send_prompt(&mut app, "do things");
     wire.push(call("t1", "slide.new", json!({})));
@@ -119,7 +161,8 @@ fn disconnect_mid_turn_unlocks_and_squashes_interrupted() {
     *wire.status.borrow_mut() = Some(LinkStatus::Failed("disconnected".into()));
     client::tick(&mut app, &ctx);
     assert!(!client::busy(&app));
-    assert_eq!(app.session.active().unwrap().history.undo.last().unwrap().label, "AI: do things (interrupted)");
+    assert_eq!(app.session.active().unwrap().history.undo.last().unwrap().label, "AI: New Slide");
+    assert_eq!(app.agent.as_ref().unwrap().state.turns.last().unwrap().status, "interrupted");
 }
 
 #[test]
@@ -218,7 +261,7 @@ fn revert_survives_switching_decks_and_back() {
         ],
     });
     client::tick(&mut app, &ctx);
-    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Replaced);
 }
 
 #[test]
@@ -243,7 +286,7 @@ fn revert_survives_a_reconnect() {
         ],
     });
     client::tick(&mut app, &ctx);
-    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Replaced);
     assert!(Arc::ptr_eq(&doc(&app), &before));
 }
 
@@ -298,7 +341,7 @@ fn new_chat_keeps_the_change_log() {
     let st = &app.agent.as_ref().unwrap().state;
     assert!(st.items.is_empty());
     assert_eq!(st.turns.len(), 1);
-    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Replaced);
 }
 
 #[test]
@@ -310,7 +353,7 @@ fn reverted_turn_can_be_restored() {
     run_until_idle(&mut app, &ctx);
     let after = doc(&app);
     assert!(!client::is_reverted(&app, 0));
-    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Undone);
+    assert_eq!(client::revert(&mut app, 0, false), RevertOutcome::Replaced);
     assert!(client::is_reverted(&app, 0));
     assert!(client::restore(&mut app, 0));
     assert!(Arc::ptr_eq(&doc(&app), &after));

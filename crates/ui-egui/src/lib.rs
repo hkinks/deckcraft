@@ -1833,10 +1833,7 @@ impl SlideApp {
             return;
         }
         self.sync_backstage();
-        // While the agent edits the deck, editing shortcuts are off (the agent pane still types).
-        if !agent::client::busy(self) {
-            self.keyboard(&ctx);
-        }
+        self.keyboard(&ctx);
         self.sync_backstage();
         ribbon::title_bar(self, ui);
         if self.backstage.is_none() && self.session.active().is_some() {
@@ -1847,10 +1844,8 @@ impl SlideApp {
         if self.tick_anim_preview(now) {
             ctx.request_repaint();
         }
-        let mut agent_left = None;
         if self.backstage.is_none() && self.session.active().is_some() && agent::pane::is_open(self) {
             agent::pane::show(self, ui);
-            agent_left = Some(ui.available_rect_before_wrap().max.x);
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| {
             if self.backstage.is_some() {
@@ -1882,7 +1877,6 @@ impl SlideApp {
                 }
             }
         });
-        agent::pane::veil(self, &ctx, agent_left);
         toast::note_missing_fonts(self);
         toast::show(self, &ctx);
         dialogs::show(self, &ctx);

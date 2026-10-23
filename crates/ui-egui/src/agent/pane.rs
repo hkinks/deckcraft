@@ -5,7 +5,8 @@
 //! inline send button. Chat shows your messages as bubbles and the agent's replies with an accent
 //! bar; the model's running commentary between steps is dimmed and its steps fold into one row,
 //! followed by a one-line result with slide chips and Revert. Changes is the deck's change log.
-//! While the agent works a light veil keeps editing input off the deck.
+//! The deck stays editable while the agent works (co-editing): each edit is its own undo step
+//! and the agent is told about the user's.
 
 use egui::text::LayoutJob;
 use egui::{Align, Color32, CornerRadius, Layout, RichText, Sense, Stroke, TextFormat, Ui, vec2};
@@ -618,20 +619,4 @@ fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         }
     });
     apply(app, action);
-}
-
-/// While a turn runs: a light veil over everything but the agent pane, so clicks can't edit the
-/// deck under the agent (keyboard shortcuts are skipped by the caller; the pane says what's going
-/// on and has Stop).
-pub fn veil(app: &SlideApp, ctx: &egui::Context, pane_left: Option<f32>) {
-    if !client::busy(app) {
-        return;
-    }
-    let t = Tokens::get(ctx);
-    let full = ctx.content_rect();
-    let rect = egui::Rect::from_min_max(full.min, egui::pos2(pane_left.unwrap_or(full.max.x), full.max.y));
-    egui::Area::new(egui::Id::new("agent_veil")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
-        let resp = ui.allocate_rect(egui::Rect::from_min_size(rect.min, rect.size()), Sense::click_and_drag());
-        ui.painter().rect_filled(resp.rect, CornerRadius::ZERO, t.shadow.gamma_multiply(0.2));
-    });
 }

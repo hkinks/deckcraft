@@ -65,15 +65,16 @@ fn stop_button_while_running() {
 }
 
 #[test]
-fn editing_keys_are_locked_while_the_agent_works() {
+fn the_deck_stays_editable_while_the_agent_works() {
     let (mut h, _wire) = harness(LinkStatus::Connected);
-    h.state_mut().run("slide.new", json!({})).unwrap();
     let n = h.state().session.active().unwrap().doc.slides.len();
     client::send_prompt(h.state_mut(), "busy");
     h.run_steps(2);
+    h.state_mut().run("slide.new", json!({})).unwrap();
+    h.run_steps(1);
     h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     h.run_steps(2);
-    assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n, "Ctrl+Z must not undo during a turn");
+    assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n, "Ctrl+Z works during a turn");
     h.get_by_label("Agent is editing the deck…");
 }
 
