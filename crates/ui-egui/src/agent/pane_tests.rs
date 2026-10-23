@@ -209,7 +209,7 @@ fn working_strip_with_stop_sits_on_top_while_running() {
     h.run_steps(2);
     let strip = h.get_by_label("Agent is editing the deck…").rect();
     let stop = h.get_by_label("Stop").rect();
-    let prompt = h.get_by_label("Send").rect();
+    let prompt = h.get_by_label("Queue").rect();
     assert!(strip.top() < prompt.top() - 200.0, "status strip is at the top, not by the prompt");
     assert!((stop.center().y - strip.center().y).abs() < 20.0, "Stop sits in the strip");
 }
@@ -272,4 +272,39 @@ fn step_count_does_not_overlap_stop() {
     // The strip's count (the chat's folded steps row has the same text further down).
     let steps = h.get_all_by_label("13 steps").map(|n| n.rect()).min_by(|a, b| (a.center().y - stop.center().y).abs().total_cmp(&(b.center().y - stop.center().y).abs())).unwrap();
     assert!(!stop.intersects(steps), "steps {steps:?} overlaps Stop {stop:?}");
+}
+
+#[test]
+fn typing_while_the_agent_works_queues_the_request() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    client::send_prompt(h.state_mut(), "long job");
+    h.run_steps(2);
+    h.state_mut().agent.as_mut().unwrap().state.input = "then this".into();
+    h.get_by_label("Queue").click();
+    h.run_steps(2);
+    assert_eq!(wire.sent_of("user_message").len(), 1);
+    assert_eq!(client::queued(h.state()), vec!["then this".to_string()]);
+    h.get_by_label("then this");
+    h.get_by_label("Remove from queue").click();
+    h.run_steps(2);
+    assert!(client::queued(h.state()).is_empty());
+}
+
+#[test]
+fn revert_confirmation_says_what_goes_and_how_to_get_it_back() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    client::send_prompt(h.state_mut(), "add a slide");
+    wire.push(ServerMsg::ToolCall { id: "t1".into(), name: "run_command".into(), input: json!({"command": "slide.new", "params": {}}) });
+    wire.push(ServerMsg::TurnEnd { turn_id: "turn-1".into(), summary: "done".into(), actions: vec![], slides: vec![], status: "ok".into() });
+    h.run_steps(6);
+    h.state_mut().run("slide.new", json!({})).unwrap();
+    h.run_steps(2);
+    h.get_by_label("Revert").click();
+    h.run_steps(2);
+    h.get_by_label("Revert “add a slide”?");
+    assert!(h.query_all_by_label_contains("Since then: 1 edit you made.").next().is_some(), "names the later edit");
+    assert!(h.query_all_by_label_contains("Undo brings everything back").next().is_some(), "says how to get it back");
+    h.get_by_label("Revert anyway").click();
+    h.run_steps(2);
+    assert!(client::is_reverted(h.state(), 0));
 }

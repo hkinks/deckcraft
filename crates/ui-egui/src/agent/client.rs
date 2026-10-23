@@ -105,6 +105,10 @@ pub struct AgentState {
     pub provider: Option<String>,
     pub user: String,
     pub input: String,
+    /// Requests typed while the agent was busy, sent one after another: (document uid, text).
+    queue: VecDeque<(u64, String)>,
+    /// A turn ended without finishing (stopped, error, limit): the queue waits for the person.
+    queue_paused: bool,
     pub login_user: String,
     pub login_password: String,
     /// Turn card whose Revert asked for confirmation.
@@ -136,6 +140,8 @@ impl Default for AgentState {
             provider: None,
             user: String::new(),
             input: String::new(),
+            queue: VecDeque::new(),
+            queue_paused: false,
             login_user: String::new(),
             login_password: String::new(),
             confirm_revert: None,
@@ -262,6 +268,9 @@ fn finish_turn(app: &mut SlideApp, client: &mut AgentClient, turn_id: String, ac
         return;
     };
     client.state.pending.clear();
+    if !matches!(status.as_str(), "ok" | "") {
+        client.state.queue_paused = true;
+    }
     client.state.stop_at = None;
     if user_changes(app, uid, &agent_doc, journal_mark).is_some() {
         user_edits += 1;
@@ -520,7 +529,59 @@ pub fn tick(app: &mut SlideApp, ctx: &egui::Context) {
     if matches!(client.state.turn, TurnState::Running { .. }) || status == LinkStatus::Connecting {
         ctx.request_repaint();
     }
+    let next = (client.state.ready
+        && status == LinkStatus::Connected
+        && !client.state.queue_paused
+        && matches!(client.state.turn, TurnState::Idle)
+        && client.state.pending.is_empty())
+    .then(|| app.session.active().map(|d| d.uid))
+    .flatten()
+    .filter(|uid| client.state.queue.front().is_some_and(|(u, _)| u == uid))
+    .and_then(|_| client.state.queue.pop_front());
     app.agent = Some(client);
+    if let Some((_, text)) = next {
+        send_prompt(app, &text);
+    }
+}
+
+/// Send `text` now, or after the requests ahead of it when the agent is busy.
+pub fn queue_prompt(app: &mut SlideApp, text: &str) {
+    let text = text.trim();
+    let Some(uid) = app.session.active().map(|d| d.uid) else { return };
+    let Some(client) = app.agent.as_mut() else { return };
+    if text.is_empty() {
+        return;
+    }
+    if matches!(client.state.turn, TurnState::Idle) && client.state.queue.is_empty() {
+        client.state.queue_paused = false;
+        send_prompt(app, text);
+    } else {
+        client.state.queue.push_back((uid, text.to_string()));
+    }
+}
+
+/// The requests waiting to be sent, in order.
+pub fn queued(app: &SlideApp) -> Vec<String> {
+    app.agent.as_ref().map(|a| a.state.queue.iter().map(|(_, t)| t.clone()).collect()).unwrap_or_default()
+}
+
+pub fn remove_queued(app: &mut SlideApp, i: usize) {
+    if let Some(a) = app.agent.as_mut() {
+        a.state.queue.remove(i);
+        if a.state.queue.is_empty() {
+            a.state.queue_paused = false;
+        }
+    }
+}
+
+pub fn queue_paused(app: &SlideApp) -> bool {
+    app.agent.as_ref().is_some_and(|a| a.state.queue_paused && !a.state.queue.is_empty())
+}
+
+pub fn resume_queue(app: &mut SlideApp) {
+    if let Some(a) = app.agent.as_mut() {
+        a.state.queue_paused = false;
+    }
 }
 
 pub fn send_prompt(app: &mut SlideApp, text: &str) {
@@ -599,6 +660,51 @@ pub fn revert(app: &mut SlideApp, i: usize, confirmed: bool) -> RevertOutcome {
         a.state.confirm_revert = None;
     }
     if replaced { RevertOutcome::Replaced } else { RevertOutcome::Unavailable }
+}
+
+/// What else changed in the deck after turn `i` (and so goes too when it is reverted).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaterChanges {
+    /// Steps the person took, during the turn or after it.
+    pub your_edits: usize,
+    /// The agent's later requests.
+    pub requests: usize,
+}
+
+impl LaterChanges {
+    pub fn is_empty(&self) -> bool {
+        self.your_edits == 0 && self.requests == 0
+    }
+
+    /// "2 edits you made and 1 later agent request".
+    pub fn describe(&self) -> String {
+        let mut parts = vec![];
+        if self.your_edits > 0 {
+            parts.push(format!("{} edit{} you made", self.your_edits, if self.your_edits == 1 { "" } else { "s" }));
+        }
+        if self.requests > 0 {
+            parts.push(format!("{} later agent request{}", self.requests, if self.requests == 1 { "" } else { "s" }));
+        }
+        if parts.is_empty() { "other changes".into() } else { parts.join(" and ") }
+    }
+}
+
+/// The changes that reverting turn `i` would also take away, read from the undo history: steps
+/// marked "AI: " are the agent's, the rest the person's. None when the history no longer reaches
+/// back to the turn.
+pub fn later_changes(app: &SlideApp, i: usize) -> Option<LaterChanges> {
+    let a = app.agent.as_ref()?;
+    let card = a.state.turns.get(i)?;
+    let after = card.after.as_ref()?;
+    let d = app.session.active().filter(|d| d.uid == card.uid)?;
+    let undo = &d.history.undo;
+    // The step after the turn is the one whose "before" is the deck as the turn left it.
+    let from = if Arc::ptr_eq(&d.doc, after) { undo.len() } else { undo.iter().rposition(|e| Arc::ptr_eq(&e.doc, after))? };
+    let your_edits = card.user_edits + undo[from..].iter().filter(|e| !e.label.starts_with("AI: ") && !e.label.starts_with("Revert ") && !e.label.starts_with("Restore ")).count();
+    let requests = a.state.turns.iter().skip(i + 1).filter(|c| c.uid == card.uid && c.after.is_some()).filter(|c| {
+        c.after.as_ref().is_some_and(|x| Arc::ptr_eq(x, &d.doc) || undo[from..].iter().any(|e| Arc::ptr_eq(&e.doc, x)))
+    }).count();
+    Some(LaterChanges { your_edits, requests })
 }
 
 /// Turn `i`'s deck is back to how it was before the turn (it was reverted, or undone).

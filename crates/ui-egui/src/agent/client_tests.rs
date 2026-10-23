@@ -402,3 +402,62 @@ fn agent_works_on_its_own_slide_without_moving_the_users_view() {
     assert_eq!(a.doc.slides.len(), 3);
     assert_eq!(a.doc.slides[a.selection.slide].id, mine, "still on the slide they were on");
 }
+
+#[test]
+fn requests_queued_while_the_agent_works_are_sent_in_order() {
+    let (mut app, ctx, wire) = setup();
+    client::queue_prompt(&mut app, "first");
+    client::queue_prompt(&mut app, "second");
+    client::queue_prompt(&mut app, "third");
+    assert_eq!(wire.sent_of("user_message").len(), 1, "only the first goes out right away");
+    assert_eq!(client::queued(&app), vec!["second".to_string(), "third".to_string()]);
+    wire.push(end("turn-1"));
+    client::tick(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    let sent = wire.sent_of("user_message");
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1]["text"], "second");
+    assert!(client::busy(&app), "the next request is running");
+    client::remove_queued(&mut app, 0);
+    wire.push(end("turn-2"));
+    run_until_idle(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    assert_eq!(wire.sent_of("user_message").len(), 2, "a removed request isn't sent");
+    assert!(client::queued(&app).is_empty());
+}
+
+#[test]
+fn a_stopped_turn_pauses_the_queue_until_resumed() {
+    let (mut app, ctx, wire) = setup();
+    client::queue_prompt(&mut app, "first");
+    client::queue_prompt(&mut app, "second");
+    wire.push(ServerMsg::TurnEnd { turn_id: "turn-1".into(), summary: String::new(), actions: vec![], slides: vec![], status: "stopped".into() });
+    run_until_idle(&mut app, &ctx);
+    client::tick(&mut app, &ctx);
+    assert_eq!(wire.sent_of("user_message").len(), 1, "after a stop nothing more is sent by itself");
+    assert!(client::queue_paused(&app));
+    client::resume_queue(&mut app);
+    client::tick(&mut app, &ctx);
+    let sent = wire.sent_of("user_message");
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1]["text"], "second");
+}
+
+#[test]
+fn revert_confirmation_names_what_else_would_be_lost() {
+    let (mut app, ctx, wire) = setup();
+    client::send_prompt(&mut app, "first");
+    wire.push(call("t1", "slide.new", json!({})));
+    wire.push(end("turn-1"));
+    run_until_idle(&mut app, &ctx);
+    // Two edits of the person's own, then another request.
+    app.run("slide.new", json!({})).unwrap();
+    app.run("slide.new", json!({})).unwrap();
+    client::send_prompt(&mut app, "second");
+    wire.push(call("t2", "slide.new", json!({})));
+    wire.push(end("turn-2"));
+    run_until_idle(&mut app, &ctx);
+    assert_eq!(client::later_changes(&app, 0), Some(client::LaterChanges { your_edits: 2, requests: 1 }));
+    assert_eq!(client::later_changes(&app, 0).unwrap().describe(), "2 edits you made and 1 later agent request");
+    assert_eq!(client::later_changes(&app, 1), Some(client::LaterChanges { your_edits: 0, requests: 0 }));
+}

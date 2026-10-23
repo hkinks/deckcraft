@@ -313,6 +313,8 @@ enum TurnAction {
     CancelRevert,
     Details,
     GoTo(usize),
+    RemoveQueued(usize),
+    ResumeQueue,
 }
 
 /// Revert (or Restore once reverted) as a real button.
@@ -342,16 +344,43 @@ fn slide_chips(ui: &mut Ui, c: &TurnCard, max: usize, out: &mut Option<TurnActio
     }
 }
 
-fn confirm_row(ui: &mut Ui, i: usize, t: &Tokens, out: &mut Option<TurnAction>) {
-    ui.label(RichText::new("Changes made after this request will be discarded too.").color(t.text_dim).font(theme::font(12.0)));
-    ui.horizontal(|ui| {
-        if ui.add(egui::Button::new("Discard later changes and revert").stroke(Stroke::new(1.0, err_color(t)))).clicked() {
-            *out = Some(TurnAction::Revert(i, true));
-        }
-        if ui.button("Cancel").clicked() {
-            *out = Some(TurnAction::CancelRevert);
-        }
-    });
+/// Reverting a request the deck has moved on from: say exactly what else goes, and how to get it
+/// back, before doing it.
+fn confirm_row(ui: &mut Ui, i: usize, c: &TurnCard, later: Option<client::LaterChanges>, t: &Tokens, out: &mut Option<TurnAction>) {
+    let warn = warn_color(t);
+    let what = later.filter(|l| !l.is_empty()).map_or_else(|| "other changes".to_string(), |l| l.describe());
+    ui.add_space(2.0);
+    egui::Frame::NONE
+        .fill(warn.gamma_multiply(0.10))
+        .stroke(Stroke::new(1.0, warn.gamma_multiply(0.5)))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.add(egui::Label::new(RichText::new(format!("Revert “{}”?", first_line(&c.prompt))).font(theme::bold(BODY)).color(t.text)).selectable(false).wrap());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "Since then: {what}. Revert puts the whole deck back to how it was before this request, so those go too. Undo brings everything back."
+                    ))
+                    .font(theme::font(12.0))
+                    .color(t.text_dim),
+                )
+                .selectable(false)
+                .wrap(),
+            );
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let red = err_color(t);
+                if ui.add(egui::Button::new(RichText::new("Revert anyway").font(theme::font(12.0)).color(egui::Color32::WHITE)).fill(red)).clicked() {
+                    *out = Some(TurnAction::Revert(i, true));
+                }
+                if ui.add(egui::Button::new(RichText::new("Cancel").font(theme::font(12.0)))).clicked() {
+                    *out = Some(TurnAction::CancelRevert);
+                }
+            });
+        });
 }
 
 fn apply(app: &mut SlideApp, action: Option<TurnAction>) {
@@ -375,6 +404,8 @@ fn apply(app: &mut SlideApp, action: Option<TurnAction>) {
                 a.state.items.push(ChatItem::Notice("That request can't be restored here.".into()));
             }
         }
+        Some(TurnAction::RemoveQueued(i)) => client::remove_queued(app, i),
+        Some(TurnAction::ResumeQueue) => client::resume_queue(app),
         Some(TurnAction::Details) => {
             if let Some(a) = app.agent.as_mut() {
                 a.state.tab = PaneTab::Changes;
@@ -442,7 +473,9 @@ fn agent_reply(ui: &mut Ui, t: &Tokens, text: &str, header: bool, dim: bool) {
 
 fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let running = client::busy(app);
-    let input_h = 104.0;
+    let queued = client::queued(app);
+    let paused = client::queue_paused(app);
+    let input_h = 104.0 + queued.len().min(4) as f32 * 26.0 + if queued.is_empty() { 0.0 } else { 24.0 };
     let scroll_h = (ui.available_height() - input_h).max(80.0);
     let mut action = None;
     let mut suggestion = None;
@@ -524,7 +557,7 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, t, *i, c, running, reverted, &mut action));
                         });
                         if a.state.confirm_revert == Some(*i) {
-                            confirm_row(ui, *i, t, &mut action);
+                            confirm_row(ui, *i, c, client::later_changes(app, *i), t, &mut action);
                         }
                     }
                 }
@@ -539,36 +572,82 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         a.state.input = s;
     }
     ui.add_space(4.0);
+    if !queued.is_empty() {
+        let mut qa = None;
+        queue_list(ui, t, &queued, paused, &mut qa);
+        apply(app, qa);
+    }
+    let Some(a) = app.agent.as_mut() else { return };
     let mut send = false;
     let enter = field(ui, |ui| {
         ui.horizontal(|ui| {
             // Exactly what is left beside the send button: any more and the pane widens itself
             // a little every frame (panels grow to fit their content).
             let w = (ui.available_width() - 26.0 - ui.spacing().item_spacing.x).max(40.0);
-            let edit = ui.add_enabled(
-                !running,
-                egui::TextEdit::multiline(&mut a.state.input).hint_text("Ask for a change…").frame(egui::Frame::NONE).desired_rows(2).desired_width(w),
-            );
-            let can = !running && !a.state.input.trim().is_empty();
+            let hint = if running { "Queue a follow-up…" } else { "Ask for a change…" };
+            let edit = ui.add(egui::TextEdit::multiline(&mut a.state.input).hint_text(hint).frame(egui::Frame::NONE).desired_rows(2).desired_width(w));
+            let can = !a.state.input.trim().is_empty();
             ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                 let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), if can { Sense::click() } else { Sense::hover() });
                 ui.painter().rect_filled(r, CornerRadius::same(13), if can { t.accent } else { t.border });
                 ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "→", theme::bold(14.0), if can { t.accent_text } else { t.text_faint });
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can, "Send"));
-                send = can && resp.on_hover_text("Send (Enter)").clicked();
+                let (name, tip) = if running { ("Queue", "Queue: sent when the agent is done (Enter)") } else { ("Send", "Send (Enter)") };
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can, name));
+                send = can && resp.on_hover_text(tip).clicked();
             });
             edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
         })
         .inner
     });
-    ui.label(RichText::new("Enter to send · Shift+Enter for a new line").font(theme::font(META)).color(t.text_faint));
+    let help = if running { "Enter to queue · Shift+Enter for a new line" } else { "Enter to send · Shift+Enter for a new line" };
+    ui.label(RichText::new(help).font(theme::font(META)).color(t.text_faint));
     if enter && a.state.input.ends_with('\n') {
         a.state.input.pop();
     }
-    if (send || enter) && !running && !a.state.input.trim().is_empty() {
+    if (send || enter) && !a.state.input.trim().is_empty() {
         let text = std::mem::take(&mut a.state.input);
-        client::send_prompt(app, &text);
+        client::queue_prompt(app, &text);
     }
+}
+
+/// Requests waiting their turn, above the prompt field.
+fn queue_list(ui: &mut Ui, t: &Tokens, queued: &[String], paused: bool, action: &mut Option<TurnAction>) {
+    egui::Frame::NONE.fill(t.chrome).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let head = if paused { "Queue paused" } else { "Up next" };
+            ui.label(RichText::new(head).font(theme::bold(META)).color(if paused { warn_color(t) } else { t.text_dim }));
+            if paused {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(RichText::new("Send next").font(theme::font(12.0)).color(t.accent_text)).fill(t.accent))
+                        .on_hover_text("The last request didn't finish; send the next one anyway")
+                        .clicked()
+                    {
+                        *action = Some(TurnAction::ResumeQueue);
+                    }
+                });
+            }
+        });
+        egui::ScrollArea::vertical().id_salt("agent_queue").max_height(4.0 * 26.0).show(ui, |ui| {
+            for (i, q) in queued.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}.", i + 1)).font(theme::font(META)).color(t.text_faint));
+                    let w = (ui.available_width() - 30.0).max(40.0);
+                    ui.add_sized(vec2(w, 20.0), egui::Label::new(RichText::new(first_line(q)).font(theme::font(12.0)).color(t.text)).truncate())
+                        .on_hover_text(q.as_str());
+                    if icon_button(ui, t, Icon::Close, "Remove from queue", "Remove from queue", true) {
+                        *action = Some(TurnAction::RemoveQueued(i));
+                    }
+                });
+            }
+        });
+    });
+    ui.add_space(4.0);
+}
+
+fn first_line(s: &str) -> String {
+    s.trim().lines().next().unwrap_or_default().to_string()
 }
 
 fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
@@ -615,7 +694,7 @@ fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                         });
                 }
                 if confirm == Some(*i) {
-                    confirm_row(ui, *i, t, &mut action);
+                    confirm_row(ui, *i, c, client::later_changes(app, *i), t, &mut action);
                 }
             });
             ui.add_space(8.0);
