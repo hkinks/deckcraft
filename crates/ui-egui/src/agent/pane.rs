@@ -32,10 +32,13 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
         return;
     }
     let t = Tokens::get(ui.ctx());
+    // The slide keeps most of a narrow window: the pane takes at most 45% of it.
+    let max = (ui.ctx().content_rect().width() * 0.45).clamp(200.0, 640.0);
+    let min = 240.0_f32.min(max);
     egui::Panel::right("agent_pane")
         .resizable(true)
-        .default_size(WIDTH)
-        .size_range(280.0..=640.0)
+        .default_size(WIDTH.min(max))
+        .size_range(min..=max)
         .frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::same(10)))
         .show(ui, |ui| {
             header(app, ui, &t);

@@ -159,3 +159,12 @@ fn view_agent_command_toggles_and_sets() {
     h.state_mut().run("view.agent", json!({})).unwrap();
     assert!(h.state().agent.as_ref().unwrap().state.open);
 }
+
+#[test]
+fn pane_leaves_room_for_the_slide_in_a_narrow_window() {
+    let (mut h, _) = harness(LinkStatus::Connected);
+    h.set_size(egui::vec2(700.0, 800.0));
+    h.run_steps(4);
+    let title = h.get_by_role_and_label(egui::accesskit::Role::Label, "AI Agent").rect();
+    assert!(title.left() >= 700.0 * 0.55 - 12.0, "pane starts at {}", title.left());
+}
