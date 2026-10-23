@@ -1205,6 +1205,9 @@ fn home(app: &mut SlideApp, ui: &mut Ui) {
     });
     group(ui, |ui| {
         big(app, ui, Icon::DesignIdeas, "Design\nIdeas", "view.pane", json!({"pane": "designer"}));
+        if app.agent.is_some() {
+            big(app, ui, Icon::Star, "AI\nAgent", "view.agent", json!({}));
+        }
     });
 }
 

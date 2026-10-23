@@ -136,3 +136,26 @@ fn markdown_bold_and_bullets_render_without_markers() {
     assert_eq!(super::pane::md_line("- item"), ("• item".to_string(), false));
     assert_eq!(super::pane::md_line("## Done"), ("Done".to_string(), true));
 }
+
+#[test]
+fn home_ribbon_button_toggles_the_pane() {
+    let (mut h, _) = harness(LinkStatus::Connected);
+    // The test fonts make the ribbon wider than in the browser: give it room.
+    h.set_size(egui::vec2(2200.0, 900.0));
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "AI Agent").click();
+    h.run_steps(2);
+    assert!(!h.state().agent.as_ref().unwrap().state.open);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "AI Agent").click();
+    h.run_steps(2);
+    assert!(h.state().agent.as_ref().unwrap().state.open);
+}
+
+#[test]
+fn view_agent_command_toggles_and_sets() {
+    let (mut h, _) = harness(LinkStatus::Connected);
+    h.state_mut().run("view.agent", json!({"on": false})).unwrap();
+    assert!(!h.state().agent.as_ref().unwrap().state.open);
+    h.state_mut().run("view.agent", json!({})).unwrap();
+    assert!(h.state().agent.as_ref().unwrap().state.open);
+}

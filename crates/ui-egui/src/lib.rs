@@ -364,6 +364,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.notesPage", "Notes Page", None, "{}"),
     ("view.reading", "Reading View", None, "{}"),
     ("view.notes", "Notes", None, "{on?: bool}"),
+    ("view.agent", "AI Agent", None, "{on?: bool} — show or hide the AI agent pane (when an agent server is connected)"),
     ("view.ruler", "Ruler", None, "{on?: bool}"),
     ("view.gridlines", "Gridlines", Some("Shift+F9"), "{on?: bool}"),
     ("view.guides", "Guides", Some("Alt+F9"), "{on?: bool}"),
@@ -852,6 +853,14 @@ impl SlideApp {
             "view.notesPage" => self.ui.view = ViewMode::NotesPage,
             "view.reading" => self.start_show(self.session.active().map(|d| d.selection.slide).unwrap_or(0), true),
             "view.notes" => self.ui.notes = self.flag(p, self.ui.notes),
+            "view.agent" => {
+                let open = self.agent.as_ref().is_some_and(|a| a.state.open);
+                let on = self.flag(p, open);
+                match self.agent.as_mut() {
+                    Some(a) => a.state.open = on,
+                    None => return Err("no agent server is connected".into()),
+                }
+            }
             "view.ruler" => self.ui.ruler = self.flag(p, self.ui.ruler),
             "view.gridlines" => self.ui.gridlines = self.flag(p, self.ui.gridlines),
             "view.guides" => {

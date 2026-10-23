@@ -367,15 +367,16 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                     if let Some(c) = a.state.turns.get(*i) {
                         egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
+                            // Summary on its own line (it wraps in a narrow pane), buttons below.
+                            ui.horizontal_wrapped(|ui| {
                                 status_chip(ui, &c.status, t);
                                 ui.label(RichText::new(changes_summary(c)).font(theme::font(12.0)));
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    revert_button(ui, *i, c, running, &mut action);
-                                    if ui.add(egui::Button::new(RichText::new("Details").color(t.text_dim)).frame(false)).clicked() {
-                                        action = Some(TurnAction::Details);
-                                    }
-                                });
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.add(egui::Button::new(RichText::new("Details").color(t.text_dim)).frame(false)).clicked() {
+                                    action = Some(TurnAction::Details);
+                                }
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| revert_button(ui, *i, c, running, &mut action));
                             });
                             if a.state.confirm_revert == Some(*i) {
                                 confirm_row(ui, *i, t, &mut action);
