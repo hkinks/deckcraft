@@ -515,12 +515,18 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                     }
                     let steps = &items[start..k];
                     let failed = steps.iter().filter(|s| matches!(s, ChatItem::Tool { ok: false, .. })).count();
-                    let title = if failed > 0 { format!("{} steps ({failed} failed)", steps.len()) } else { format!("{} steps", steps.len()) };
+                    let noun = if steps.len() == 1 { "step" } else { "steps" };
+                    let title = if failed > 0 { format!("{} {noun} ({failed} failed)", steps.len()) } else { format!("{} {noun}", steps.len()) };
                     egui::CollapsingHeader::new(RichText::new(title).font(theme::font(META)).color(t.text_dim)).id_salt(("steps", start)).default_open(false).show(ui, |ui| {
                         for s in steps {
                             if let ChatItem::Tool { name, ok, summary } = s {
                                 let mark = if *ok { "✓" } else { "×" };
                                 ui.label(RichText::new(format!("{mark} {name}")).font(theme::font(META)).color(if *ok { t.text_dim } else { err_color(t) })).on_hover_text(summary);
+                                // Why it failed, without hovering (the agent usually recovers on its own).
+                                if !*ok && !summary.is_empty() {
+                                    let why: String = summary.chars().take(140).collect();
+                                    ui.add(egui::Label::new(RichText::new(format!("   {why}")).font(theme::font(META)).color(t.text_faint)).wrap());
+                                }
                             }
                         }
                     });

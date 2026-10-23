@@ -401,3 +401,15 @@ fn files_tab_filter_narrows_the_list() {
     assert!(h.query_by_label("brief.md").is_none());
     h.get_by_label("q3.csv");
 }
+
+#[test]
+fn a_failed_step_says_why_without_hovering() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    client::send_prompt(h.state_mut(), "do it");
+    wire.push(ServerMsg::ToolCall { id: "t1".into(), name: "run_command".into(), input: json!({"command": "nope.nothing", "params": {}}) });
+    wire.push(ServerMsg::TurnEnd { turn_id: "turn-1".into(), summary: "done".into(), actions: vec![], slides: vec![], status: "ok".into() });
+    h.run_steps(6);
+    h.get_by_label("1 step (1 failed)").click();
+    h.run_steps(2);
+    assert!(h.query_all_by_label_contains("unknown command").next().is_some());
+}

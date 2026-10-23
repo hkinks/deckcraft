@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use super::protocol::ContentPart;
 use super::tools;
 use crate::SlideApp;
-use crate::workspace::{Kind, MAX_FILE_BYTES, WsStatus, kind_of, mime_of, size_label, text_of};
+use crate::workspace::{Kind, MAX_FILE_BYTES, WsEntry, WsStatus, kind_of, mime_of, size_label, text_of};
 
 pub const NAMES: &[&str] = &["list_workspace_files", "read_workspace_file", "insert_workspace_image", "apply_workspace_template"];
 
@@ -49,7 +49,50 @@ pub enum Need {
 }
 
 fn path_arg(input: &Value) -> Option<String> {
-    input.get("path").and_then(Value::as_str).map(|p| p.trim().trim_start_matches("./").trim_start_matches('/').to_string()).filter(|p| !p.is_empty())
+    input.get("path").and_then(Value::as_str).map(|p| p.trim().replace('\\', "/").trim_start_matches("./").trim_start_matches('/').to_string()).filter(|p| !p.is_empty())
+}
+
+/// The listed file `asked` means: exactly, under the folder's name, in another case, or by its
+/// name alone when only one file has it. Otherwise an error naming the nearest files.
+fn resolve(files: &[WsEntry], folder: &str, asked: &str) -> Result<String, String> {
+    let exact = |p: &str| files.iter().find(|f| f.path == p).map(|f| f.path.clone());
+    let nocase = |p: &str| files.iter().find(|f| f.path.eq_ignore_ascii_case(p)).map(|f| f.path.clone());
+    let under = asked.strip_prefix(&format!("{folder}/")).unwrap_or(asked);
+    if let Some(p) = exact(asked).or_else(|| exact(under)).or_else(|| nocase(under)) {
+        return Ok(p);
+    }
+    let name = |p: &str| p.rsplit('/').next().unwrap_or(p).to_lowercase();
+    let want = name(under);
+    let same: Vec<&WsEntry> = files.iter().filter(|f| name(&f.path) == want).collect();
+    if let [one] = same[..] {
+        return Ok(one.path.clone());
+    }
+    let mut near: Vec<(usize, &str)> = files.iter().map(|f| (distance(&name(&f.path), &want), f.path.as_str())).filter(|(d, _)| *d <= 3).collect();
+    near.sort();
+    let hint = if !same.is_empty() {
+        format!(" Several files are called that: {}.", same.iter().map(|f| f.path.as_str()).collect::<Vec<_>>().join(", "))
+    } else if near.is_empty() {
+        " list_workspace_files shows the paths.".into()
+    } else {
+        format!(" Did you mean {}?", near.iter().take(5).map(|(_, p)| *p).collect::<Vec<_>>().join(", "))
+    };
+    Err(format!("no file {asked:?} in the workspace.{hint}"))
+}
+
+/// Edit distance (small strings: file names).
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
 }
 
 /// The file `name` must have read before it runs (None when it's missing, unlisted or too big:
@@ -58,11 +101,13 @@ pub fn needs(app: &SlideApp, name: &str, input: &Value) -> Need {
     if name == "list_workspace_files" {
         return Need::Nothing;
     }
-    let (Some(ws), Some(path)) = (app.workspace(), path_arg(input)) else { return Need::Nothing };
+    let (Some(ws), Some(asked)) = (app.workspace(), path_arg(input)) else { return Need::Nothing };
+    let files = ws.host.files();
+    let Ok(path) = resolve(&files, &ws.folder_name().unwrap_or_default(), &asked) else { return Need::Nothing };
     if ws.cache.contains_key(&path) {
         return Need::Nothing;
     }
-    match ws.host.files().iter().find(|f| f.path == path) {
+    match files.iter().find(|f| f.path == path) {
         Some(f) if f.size <= MAX_FILE_BYTES => Need::File(path),
         _ => Need::Nothing,
     }
@@ -99,10 +144,12 @@ pub fn run(app: &mut SlideApp, ctx: &egui::Context, uid: Option<u64>, name: &str
         let head = format!("Workspace “{folder}”: {} file(s){}", files.len(), if filter.is_empty() { String::new() } else { format!(", {} matching “{filter}”", shown.len()) });
         return (true, text(format!("{head}\n{}", shown.join("\n"))));
     }
-    let Some(path) = path_arg(input) else { return (false, text(format!("{name} needs a `path`"))) };
-    let Some(entry) = files.iter().find(|f| f.path == path) else {
-        return (false, text(format!("no file {path:?} in the workspace; list_workspace_files shows the paths")));
+    let Some(asked) = path_arg(input) else { return (false, text(format!("{name} needs a `path`"))) };
+    let path = match resolve(&files, &folder, &asked) {
+        Ok(p) => p,
+        Err(e) => return (false, text(e)),
     };
+    let Some(entry) = files.iter().find(|f| f.path == path) else { return (false, text(format!("no file {path:?}"))) };
     if entry.size > MAX_FILE_BYTES {
         return (false, text(format!("{path} is {}; the workspace reads files up to {}", size_label(entry.size), size_label(MAX_FILE_BYTES))));
     }

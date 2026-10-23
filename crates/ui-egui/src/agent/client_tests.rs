@@ -603,3 +603,59 @@ fn a_workspace_picture_keeps_its_proportions_in_any_box() {
     assert_eq!(pics[1], (100.0, 110.0, 80.0, 80.0), "fitted in the 80 × 200 box, centred");
     assert_eq!(pics[0], (300.0, 50.0, 120.0, 120.0), "height follows the width");
 }
+
+#[test]
+fn commands_find_their_shape_on_any_slide() {
+    // The agent edits a shape on another slide by id, without going there first, in a batch.
+    let (mut app, ctx, wire) = setup();
+    app.run("slide.go", json!({"index": 0})).unwrap();
+    let r = app.run("shape.insert", json!({"preset": "rect", "rect": [10, 10, 100, 50]})).unwrap();
+    let first_id = r["id"].as_u64().unwrap();
+    app.run("slide.go", json!({"index": 1})).unwrap();
+    let r = app.run("shape.insert", json!({"preset": "rect", "rect": [10, 10, 100, 50]})).unwrap();
+    let second_id = r["id"].as_u64().unwrap();
+    app.run("slide.go", json!({"index": 0})).unwrap();
+    client::send_prompt(&mut app, "sell the idea");
+    wire.push(ServerMsg::ToolCall {
+        id: "b1".into(),
+        name: "batch".into(),
+        input: json!({"commands": [
+            {"command": "text.set", "params": {"id": second_id, "text": "Second slide box"}},
+            {"command": "text.set", "params": {"id": first_id, "text": "First slide box"}}
+        ]}),
+    });
+    client::tick(&mut app, &ctx);
+    let r = wire.sent_of("tool_result");
+    assert_eq!(r[0]["ok"], true, "{}", result_text(&r[0]));
+    let d = doc(&app);
+    let text_of = |slide: usize, id: u64| {
+        deckcraft_model::find_shape(&d.slides[slide].shapes, deckcraft_model::ShapeId(id as u32)).and_then(|s| s.text.as_ref()).map(|t| t.paragraphs.iter().map(|p| p.runs.iter().map(|r| r.content()).collect::<String>()).collect::<String>()).unwrap_or_default()
+    };
+    assert_eq!(text_of(1, second_id), "Second slide box");
+    assert_eq!(text_of(0, first_id), "First slide box");
+    assert_eq!(app.session.active().unwrap().selection.slide, 0, "the person's view stays");
+}
+
+#[test]
+fn workspace_paths_are_found_the_ways_models_write_them() {
+    let (mut app, ctx, wire) = setup();
+    let host = with_workspace(&mut app, &[("brief.md", b"Ship in March."), ("data/q3.csv", b"a,b"), ("notes/brief.md", b"other")]);
+    host.0.borrow_mut().instant = true;
+    client::send_prompt(&mut app, "read");
+    for (i, p) in ["Launch/brief.md", "BRIEF.MD", "q3.csv", "./data/q3.csv"].iter().enumerate() {
+        wire.push(ServerMsg::ToolCall { id: format!("r{i}"), name: "read_workspace_file".into(), input: json!({"path": p}) });
+    }
+    wire.push(ServerMsg::ToolCall { id: "x".into(), name: "read_workspace_file".into(), input: json!({"path": "breif.md"}) });
+    for _ in 0..16 {
+        app.workspace_tick();
+        client::tick(&mut app, &ctx);
+    }
+    let r = wire.sent_of("tool_result");
+    assert_eq!(r.len(), 5);
+    for x in &r[..4] {
+        assert_eq!(x["ok"], true, "{}", result_text(x));
+    }
+    assert!(result_text(&r[0]).contains("Ship in March."));
+    assert_eq!(r[4]["ok"], false);
+    assert!(result_text(&r[4]).contains("brief.md"), "suggests the near miss: {}", result_text(&r[4]));
+}

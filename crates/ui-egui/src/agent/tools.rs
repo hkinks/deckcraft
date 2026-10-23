@@ -98,6 +98,9 @@ impl Backend for LiveBackend<'_> {
         if self.uid.is_some_and(|u| u != active) {
             return Err("the deck this turn was editing is no longer the active document".into());
         }
+        if method == "engine.execute" {
+            follow_shapes(self.app, &params);
+        }
         let (req, _rx) = ControlRequest::new(method, params);
         // The agent hears about its own failures in the tool result; the person's status bar is
         // theirs.
@@ -120,6 +123,29 @@ impl Backend for LiveBackend<'_> {
     }
     fn describe(&self) -> String {
         "the editor in this browser tab".into()
+    }
+}
+
+/// A command that names shapes (`id`, `ids`) that aren't on the slide the agent is on runs where
+/// they are: the agent's view goes to the one slide that has them first (the person's view is
+/// apart from it). Ids found on several slides are left for the command to refuse.
+fn follow_shapes(app: &mut SlideApp, exec: &Value) {
+    let p = exec.get("params").cloned().unwrap_or(Value::Null);
+    let mut ids: Vec<u32> = p.get("ids").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|n| n as u32).collect()).unwrap_or_default();
+    if let Some(id) = p.get("id").and_then(Value::as_u64) {
+        ids.push(id as u32);
+    }
+    if ids.is_empty() || p.get("slide").is_some() {
+        return;
+    }
+    let Some(d) = app.session.active() else { return };
+    let on = |i: usize| d.doc.slides.get(i).is_some_and(|s| ids.iter().all(|id| deckcraft_model::find_shape(&s.shapes, deckcraft_model::ShapeId(*id)).is_some()));
+    if d.selection.target != deckcraft_engine::Target::Slides || on(d.selection.slide) {
+        return;
+    }
+    let slides: Vec<usize> = (0..d.doc.slides.len()).filter(|i| on(*i)).collect();
+    if let [i] = slides[..] {
+        let _ = app.session.execute("slide.go", &serde_json::json!({"index": i}));
     }
 }
 
