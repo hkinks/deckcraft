@@ -24,6 +24,9 @@ class ProviderCfg(BaseModel):
     model: str
     vision: bool = False
     max_tokens: int = 16000
+    # Anthropic only: adaptive thinking and effort (Sonnet 5.5 defaults to high; medium suits agent loops).
+    thinking: bool = True
+    effort: str | None = "medium"
 
 
 class Limits(BaseModel):
