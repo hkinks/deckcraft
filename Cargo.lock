@@ -1170,6 +1170,7 @@ dependencies = [
  "deckcraft-color",
  "deckcraft-engine",
  "deckcraft-fonts",
+ "deckcraft-format",
  "deckcraft-geom",
  "deckcraft-mcp",
  "deckcraft-media",

@@ -16,5 +16,32 @@
 <body>
   <canvas id="deckcraft_canvas"></canvas>
   <div id="deckcraft_loading">Loading DeckCraft&hellip;</div>
+  <script>
+    // Autosaved copies of unsaved presentations (see crates/ui-egui/src/autosave.rs), in IndexedDB:
+    // one record per presentation, {key, title, savedAt, bytes: Uint8Array of a .deckcraft file}.
+    window.deckcraftRecovery = (() => {
+      let db = null;
+      const open = () => db ?? (db = new Promise((resolve, reject) => {
+        const r = indexedDB.open("deckcraft-recovery", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("decks", { keyPath: "key" });
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      }));
+      const tx = async (mode, fn) => {
+        const d = await open();
+        return new Promise((resolve, reject) => {
+          const t = d.transaction("decks", mode);
+          const req = fn(t.objectStore("decks"));
+          t.oncomplete = () => resolve(req && req.result);
+          t.onerror = () => reject(t.error);
+        });
+      };
+      return {
+        put: (key, title, savedAt, bytes) => tx("readwrite", s => s.put({ key, title, savedAt, bytes })),
+        del: key => tx("readwrite", s => s.delete(key)),
+        list: () => tx("readonly", s => s.getAll()),
+      };
+    })();
+  </script>
 </body>
 </html>

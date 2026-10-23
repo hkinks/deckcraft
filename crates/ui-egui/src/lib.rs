@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod animtimeline;
+pub mod autosave;
 pub mod backstage;
 pub mod canvas;
 pub mod control;
@@ -444,6 +445,8 @@ pub struct SlideApp {
     pub control_rx: Option<Receiver<ControlRequest>>,
     /// The agent chat pane and its link to the agent server (web app with a server only).
     pub agent: Option<Box<agent::client::AgentClient>>,
+    /// Autosave to the host's recovery store (web app).
+    pub autosave: Option<autosave::Autosave>,
     /// Spelling squiggles, checked on a worker thread.
     pub squiggles: squiggles::Squiggles,
     pub dialog: Option<dialogs::Dialog>,
@@ -544,6 +547,7 @@ impl SlideApp {
             textures: textures::Textures::default(),
             control_rx: None,
             agent: None,
+            autosave: None,
             squiggles: Default::default(),
             dialog: None,
             thesaurus_query: String::new(),
@@ -1822,6 +1826,7 @@ impl SlideApp {
         let t0 = now_ms();
         let t = theme::Tokens::get(&ctx);
         agent::client::tick(self, &ctx);
+        self.autosave_tick();
         self.tick_media(&ctx);
         eyedropper::tick(self, &ctx);
         self.opening_ui(&ctx);
@@ -1877,6 +1882,7 @@ impl SlideApp {
                 }
             }
         });
+        autosave::prompt(self, &ctx);
         toast::note_missing_fonts(self);
         toast::show(self, &ctx);
         dialogs::show(self, &ctx);
@@ -2067,6 +2073,8 @@ fn js_now() -> f64 {
 
 #[cfg(test)]
 mod animpane_tests;
+#[cfg(test)]
+mod autosave_tests;
 #[cfg(test)]
 mod browsetheme_tests;
 #[cfg(test)]
