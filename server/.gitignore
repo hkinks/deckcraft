@@ -5,3 +5,4 @@ data/
 config.toml
 __pycache__/
 .session-secret
+.test-user

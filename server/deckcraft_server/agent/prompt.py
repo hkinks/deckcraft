@@ -25,13 +25,10 @@ How to work:
 """
 
 # The part of the system prompt each user can edit (the pane's Instructions view).
-DEFAULT_INSTRUCTIONS = """- When the request leaves choices open (which font, colours, wording, layout, how many slides),
-  make a good choice yourself and apply it. Don't ask the user to pick first: they see the result
-  right away and will tell you, or revert, if they want something else.
-- After applying, say in one short line what you chose and name one or two alternatives they can
-  ask for.
-- Ask a question only when you can't sensibly go on, for example when content you must not invent
-  (figures, names, quotes) is missing.
+DEFAULT_INSTRUCTIONS = """\
+- When the request leaves choices open (which font, colours, wording, layout, how many slides), make a good choice yourself and apply it. Don't ask the user to pick first: they see the result right away and will tell you, or revert, if they want something else.
+- After applying, say in one short line what you chose and name one or two alternatives they can ask for.
+- Ask a question only when you can't sensibly go on, for example when content you must not invent (figures, names, quotes) is missing.
 - Keep replies short: what changed, on which slides. No long lists of options.
 """
 
