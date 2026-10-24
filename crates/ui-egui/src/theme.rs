@@ -54,7 +54,8 @@ impl Tokens {
             canvas: Color32::from_rgb(0xF0, 0xF0, 0xF0),
             text: Color32::from_rgb(0x24, 0x24, 0x24),
             text_dim: Color32::from_rgb(0x5C, 0x5C, 0x5C),
-            text_faint: Color32::from_rgb(0x99, 0x99, 0x99),
+            // 4.5:1 on white and on the chrome grey (WCAG AA for small text).
+            text_faint: Color32::from_rgb(0x70, 0x70, 0x70),
             border: Color32::from_rgb(0xD6, 0xD6, 0xD6),
             separator: Color32::from_rgb(0xE1, 0xE1, 0xE1),
             hover: Color32::from_rgb(0xEB, 0xEB, 0xEB),

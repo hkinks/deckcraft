@@ -602,7 +602,8 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
                     ui.with_layout(Layout::top_down(Align::Max), |ui| {
                         egui::Frame::NONE.fill(t.selected).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
                             ui.set_max_width(ui.available_width() * 0.85);
-                            ui.label(RichText::new(s).font(theme::font(BODY)).color(t.text));
+                            // The bubble sits on the right; its lines read from the left.
+                            ui.with_layout(Layout::top_down(Align::Min), |ui| ui.label(RichText::new(s).font(theme::font(BODY)).color(t.text)));
                         });
                     });
                 }
