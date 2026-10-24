@@ -83,7 +83,8 @@ struct WebShell {
     inbox: Inbox,
     /// Until the page is known to come from an agent server (otherwise the pane goes away).
     agent: Option<crate::agent_ws::WebAgentTransport>,
-    /// Whether any presentation has unsaved changes (read by the page's beforeunload handler).
+    /// Whether leaving now would lose changes the autosave copy doesn't have yet (read by the
+    /// page's beforeunload handler).
     unsaved: std::rc::Rc<std::cell::Cell<bool>>,
     /// The agent server's font catalog once it has loaded.
     fonts: FontSlot,
@@ -91,7 +92,8 @@ struct WebShell {
 
 type FontSlot = std::rc::Rc<std::cell::RefCell<Option<(Vec<deckcraft_ui_egui::webfonts::CatalogFamily>, crate::fonts_web::WebFontFetcher)>>>;
 
-/// Ask the browser to confirm leaving the page while a presentation has unsaved changes.
+/// Ask the browser to confirm leaving the page while changes aren't autosaved yet (a few
+/// seconds after an edit); after that, reopening the page offers the work back.
 fn warn_before_leaving() -> std::rc::Rc<std::cell::Cell<bool>> {
     let unsaved = std::rc::Rc::new(std::cell::Cell::new(false));
     let flag = unsaved.clone();
@@ -149,7 +151,7 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
-        self.unsaved.set(self.app.any_unsaved());
+        self.unsaved.set(self.app.needs_leave_warning());
     }
 }
 

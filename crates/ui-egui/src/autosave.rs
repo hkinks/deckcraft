@@ -86,6 +86,15 @@ impl SlideApp {
         self.session.documents().iter().any(|d| d.is_dirty())
     }
 
+    /// Leaving the page would lose work: a presentation has changes the autosave copy doesn't
+    /// have yet (or there is no autosave). Once the copy is current, reopening the page offers it
+    /// back, so the browser's "Leave site?" question isn't needed.
+    pub fn needs_leave_warning(&self) -> bool {
+        self.session.documents().iter().any(|d| {
+            d.is_dirty() && self.autosave.as_ref().is_none_or(|a| a.written.get(&d.uid) != Some(&d.revision))
+        })
+    }
+
     /// Write unsaved decks (at most every `interval_ms`), drop entries of saved or closed ones,
     /// and pick up earlier work to offer.
     pub fn autosave_tick(&mut self) {
