@@ -27,6 +27,9 @@ Building the web editor needs Rust with the `wasm32-unknown-unknown` target, `tr
   (`LITELLM_BASE_URL`, `LITELLM_API_KEY`), default model `claude-sonnet-5-5`, vision on.
 - `kind = "openai_compat"`: any OpenAI-compatible `/v1/chat/completions`, e.g. llama-swap
   serving Qwen at `http://127.0.0.1:8080/v1`.
+- `kind = "claude_code"`: Claude with your own Claude subscription, through the `claude` CLI on
+  the server's machine (signed in with `claude login`; no key). Claude Code runs the tool loop with
+  only the deck's tools. For personal local use; a shared or company server uses `anthropic`.
 
 The URLs and keys never reach the browser; it only sees provider ids, model names and whether a
 model can look at images.
