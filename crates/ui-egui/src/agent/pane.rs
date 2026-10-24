@@ -291,7 +291,7 @@ fn ago(ms: Option<f64>) -> String {
 /// A small coloured pill: ✓ done, ■ stopped, ↺ reverted…
 fn status_pill(ui: &mut Ui, status: &str, reverted: bool, t: &Tokens) {
     let (text, color) = if reverted {
-        ("↺ reverted", t.text_dim)
+        ("↺ undone", t.text_dim)
     } else {
         match status {
             "ok" | "" => ("✓ done", ok_color(t)),
@@ -302,7 +302,7 @@ fn status_pill(ui: &mut Ui, status: &str, reverted: bool, t: &Tokens) {
         }
     };
     let tip = if reverted {
-        "This request's changes were taken back"
+        "A Revert took this request's changes back; Restore brings them back"
     } else {
         match status {
             "ok" | "" => "The agent finished this request",
@@ -329,6 +329,7 @@ fn changes_summary(c: &TurnCard) -> String {
 enum TurnAction {
     Revert(usize, bool),
     Restore(usize),
+    RestoreAll,
     CancelRevert,
     Details,
     GoTo(usize),
@@ -338,11 +339,17 @@ enum TurnAction {
 }
 
 /// Revert (or Restore once reverted) as a real button.
+/// Requests form a timeline: Revert goes back to before a request, so the requests after it are
+/// undone too; Restore brings the undone ones back up to and including this one.
 fn revert_button(ui: &mut Ui, t: &Tokens, i: usize, c: &TurnCard, running: bool, reverted: bool, out: &mut Option<TurnAction>) {
     let (name, tip, can, action) = if reverted {
-        ("Restore", "Bring this request's changes back (one undoable step)", !running, TurnAction::Restore(i))
+        ("Restore to here", "Bring the deck back up to and including this request; requests after it stay undone", !running, TurnAction::Restore(i))
     } else {
-        let tip = if c.before.is_none() { "Revert is available for requests made since this page was opened" } else { "Put the deck back as it was before this request (one undoable step)" };
+        let tip = if c.before.is_none() {
+            "Revert is available for requests made since this page was opened"
+        } else {
+            "Go back to how the deck was before this request. Later requests are undone too; you can restore them"
+        };
         ("Revert", tip, c.before.is_some() && !running, TurnAction::Revert(i, false))
     };
     let glyph = if reverted { "↻" } else { "↺" };
@@ -364,6 +371,43 @@ fn slide_chips(ui: &mut Ui, c: &TurnCard, max: usize, out: &mut Option<TurnActio
     }
 }
 
+/// While a Revert is in effect: what is undone, and one button to bring it all back.
+fn rewind_banner(app: &SlideApp, ui: &mut Ui, t: &Tokens, running: bool, out: &mut Option<TurnAction>) {
+    let Some(r) = client::rewind(app) else { return };
+    let Some(prompt) = app.agent.as_ref().and_then(|a| a.state.turns.get(r.from)).map(|c| first_line(&c.prompt)) else { return };
+    let n = r.undone.len();
+    egui::Frame::NONE
+        .fill(t.accent.gamma_multiply(0.08))
+        .stroke(Stroke::new(1.0, t.accent.gamma_multiply(0.45)))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let can = !running;
+                let r = ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let b = ui.add_enabled(can, egui::Button::new(RichText::new("↻ Restore all").font(theme::font(12.0)).color(t.accent_text)).fill(t.accent));
+                    let b = b.on_hover_text("Bring back everything the Revert undid, as one step");
+                    let clicked = b.clicked();
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("{n} request{} undone · back to before “{prompt}”", if n == 1 { "" } else { "s" }))
+                                    .font(theme::font(12.0))
+                                    .color(t.text),
+                            )
+                            .truncate(),
+                        );
+                    });
+                    clicked
+                });
+                if r.inner {
+                    *out = Some(TurnAction::RestoreAll);
+                }
+            });
+        });
+}
+
 /// Reverting a request the deck has moved on from: say exactly what else goes, and how to get it
 /// back, before doing it.
 fn confirm_row(ui: &mut Ui, i: usize, c: &TurnCard, later: Option<client::LaterChanges>, t: &Tokens, out: &mut Option<TurnAction>) {
@@ -378,11 +422,11 @@ fn confirm_row(ui: &mut Ui, i: usize, c: &TurnCard, later: Option<client::LaterC
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
-            ui.add(egui::Label::new(RichText::new(format!("Revert “{}”?", first_line(&c.prompt))).font(theme::bold(BODY)).color(t.text)).selectable(false).wrap());
+            ui.add(egui::Label::new(RichText::new(format!("Go back to before “{}”?", first_line(&c.prompt))).font(theme::bold(BODY)).color(t.text)).selectable(false).wrap());
             ui.add(
                 egui::Label::new(
                     RichText::new(format!(
-                        "Since then: {what}. Revert puts the whole deck back to how it was before this request, so those go too. Undo brings everything back."
+                        "The deck returns to how it was before this request. Also undone: {what}. They stay listed, and Restore all brings them back in one click."
                     ))
                     .font(theme::font(12.0))
                     .color(t.text_dim),
@@ -393,7 +437,7 @@ fn confirm_row(ui: &mut Ui, i: usize, c: &TurnCard, later: Option<client::LaterC
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 let red = err_color(t);
-                if ui.add(egui::Button::new(RichText::new("Revert anyway").font(theme::font(12.0)).color(egui::Color32::WHITE)).fill(red)).clicked() {
+                if ui.add(egui::Button::new(RichText::new("Go back").font(theme::font(12.0)).color(egui::Color32::WHITE)).fill(red)).clicked() {
                     *out = Some(TurnAction::Revert(i, true));
                 }
                 if ui.add(egui::Button::new(RichText::new("Cancel").font(theme::font(12.0)))).clicked() {
@@ -422,6 +466,13 @@ fn apply(app: &mut SlideApp, action: Option<TurnAction>) {
                 && let Some(a) = app.agent.as_mut()
             {
                 a.state.items.push(ChatItem::Notice("That request can't be restored here.".into()));
+            }
+        }
+        Some(TurnAction::RestoreAll) => {
+            if !client::restore_all(app)
+                && let Some(a) = app.agent.as_mut()
+            {
+                a.state.items.push(ChatItem::Notice("Nothing to restore: the deck changed since the Revert.".into()));
             }
         }
         Some(TurnAction::RemoveQueued(i)) => client::remove_queued(app, i),
@@ -496,7 +547,7 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let running = client::busy(app);
     let queued = client::queued(app);
     let paused = client::queue_paused(app);
-    let input_h = 104.0 + queued.len().min(4) as f32 * 26.0 + if queued.is_empty() { 0.0 } else { 24.0 };
+    let input_h = 104.0 + queued.len().min(4) as f32 * 26.0 + if queued.is_empty() { 0.0 } else { 24.0 } + if client::rewind(app).is_some() { 40.0 } else { 0.0 };
     let scroll_h = (ui.available_height() - input_h).max(80.0);
     let mut action = None;
     let mut suggestion = None;
@@ -608,6 +659,9 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         a.state.input = s;
     }
     ui.add_space(4.0);
+    let mut ra = None;
+    rewind_banner(app, ui, t, running, &mut ra);
+    apply(app, ra);
     if !queued.is_empty() {
         let mut qa = None;
         queue_list(ui, t, &queued, paused, &mut qa);
@@ -949,6 +1003,8 @@ fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     let turns = deck_turns(app);
     let confirm = app.agent.as_ref().and_then(|a| a.state.confirm_revert);
     let mut action = None;
+    rewind_banner(app, ui, t, running, &mut action);
+    ui.add_space(6.0);
     egui::ScrollArea::vertical().id_salt("agent_changes").auto_shrink([false, false]).show(ui, |ui| {
         if turns.is_empty() {
             ui.add_space(8.0);
@@ -957,8 +1013,13 @@ fn changes(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         }
         for (i, c) in turns.iter().rev() {
             let reverted = client::is_reverted(app, *i);
-            egui::Frame::NONE.fill(t.chrome).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            // Undone requests read as set aside: dimmed, with a dashed-looking outline.
+            let frame = if reverted { egui::Frame::NONE.stroke(Stroke::new(1.0, t.border)) } else { egui::Frame::NONE.fill(t.chrome) };
+            frame.corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                if reverted {
+                    ui.multiply_opacity(0.75);
+                }
                 ui.horizontal(|ui| {
                     status_pill(ui, &c.status, reverted, t);
                     ui.label(RichText::new(changes_summary(c)).font(theme::font(12.0)).color(t.text));

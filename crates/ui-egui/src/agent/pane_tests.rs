@@ -189,8 +189,8 @@ fn changes_tab_offers_restore_after_revert() {
     h.run_steps(2);
     h.get_by_label("Revert").click();
     h.run_steps(2);
-    h.get_by_label("↺ reverted");
-    h.get_by_label("Restore").click();
+    h.get_by_label("↺ undone");
+    h.get_by_label("Restore to here").click();
     h.run_steps(2);
     assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n);
 }
@@ -305,10 +305,10 @@ fn revert_confirmation_says_what_goes_and_how_to_get_it_back() {
     h.run_steps(2);
     h.get_by_label("Revert").click();
     h.run_steps(2);
-    h.get_by_label("Revert “add a slide”?");
-    assert!(h.query_all_by_label_contains("Since then: 1 edit you made.").next().is_some(), "names the later edit");
-    assert!(h.query_all_by_label_contains("Undo brings everything back").next().is_some(), "says how to get it back");
-    h.get_by_label("Revert anyway").click();
+    h.get_by_label("Go back to before “add a slide”?");
+    assert!(h.query_all_by_label_contains("Also undone: 1 edit you made.").next().is_some(), "names the later edit");
+    assert!(h.query_all_by_label_contains("Restore all brings them back").next().is_some(), "says how to get it back");
+    h.get_by_label("Go back").click();
     h.run_steps(2);
     assert!(client::is_reverted(h.state(), 0));
 }
@@ -463,4 +463,26 @@ fn text_and_enter_in_one_frame_send_the_text() {
     assert_eq!(sent.len(), 1, "sent, not a new line");
     assert_eq!(sent[0]["text"], "make it pop");
     assert!(h.state().agent.as_ref().unwrap().state.input.is_empty());
+}
+
+#[test]
+fn reverting_an_older_request_shows_the_timeline_and_restores_it_all_at_once() {
+    let (mut h, wire) = harness(LinkStatus::Connected);
+    for (k, p) in ["first", "second", "third"].iter().enumerate() {
+        client::send_prompt(h.state_mut(), p);
+        wire.push(ServerMsg::ToolCall { id: format!("t{k}"), name: "run_command".into(), input: json!({"command": "slide.new", "params": {}}) });
+        wire.push(ServerMsg::TurnEnd { turn_id: format!("turn-{k}"), summary: "done".into(), actions: vec![], slides: vec![], status: "ok".into() });
+        h.run_steps(6);
+    }
+    let n = h.state().session.active().unwrap().doc.slides.len();
+    h.query_all_by_label("Revert").next().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label("Go back").click();
+    h.run_steps(2);
+    assert_eq!(h.query_all_by_label("↺ undone").count(), 3, "every later request is marked undone");
+    h.get_by_label_contains("3 requests undone");
+    h.get_by_label("↻ Restore all").click();
+    h.run_steps(2);
+    assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n);
+    assert_eq!(h.query_all_by_label("↺ undone").count(), 0);
 }

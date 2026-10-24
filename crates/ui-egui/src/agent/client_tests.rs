@@ -688,3 +688,72 @@ fn a_request_typed_while_reconnecting_waits_for_the_handshake() {
     assert_eq!(sent.len(), 1, "sent once the server is ready");
     assert_eq!(sent[0]["text"], "add market research");
 }
+
+/// Three requests, each adding a slide; returns the deck after each.
+fn three_turns(app: &mut SlideApp, ctx: &egui::Context, wire: &Wire) -> Vec<Arc<deckcraft_model::Presentation>> {
+    let mut afters = vec![];
+    for (k, p) in ["one", "two", "three"].iter().enumerate() {
+        client::send_prompt(app, p);
+        wire.push(call(&format!("t{k}"), "slide.new", json!({})));
+        wire.push(end(&format!("turn-{k}")));
+        run_until_idle(app, ctx);
+        afters.push(doc(app));
+    }
+    afters
+}
+
+#[test]
+fn reverting_an_older_request_marks_it_and_every_later_one_undone() {
+    let (mut app, ctx, wire) = setup();
+    three_turns(&mut app, &ctx, &wire);
+    assert_eq!(client::revert(&mut app, 0, true), RevertOutcome::Replaced);
+    assert!((0..3).all(|i| client::is_reverted(&app, i)));
+    let r = client::rewind(&app).unwrap();
+    assert_eq!((r.from, r.undone), (0, vec![0, 1, 2]));
+}
+
+#[test]
+fn restore_all_brings_every_undone_request_back_in_one_step() {
+    let (mut app, ctx, wire) = setup();
+    let afters = three_turns(&mut app, &ctx, &wire);
+    client::revert(&mut app, 0, true);
+    assert!(client::restore_all(&mut app));
+    assert!(Arc::ptr_eq(&doc(&app), &afters[2]));
+    assert!((0..3).all(|i| !client::is_reverted(&app, i)));
+    assert!(client::rewind(&app).is_none());
+}
+
+#[test]
+fn restore_all_keeps_the_persons_edits_made_before_the_revert() {
+    let (mut app, ctx, wire) = setup();
+    three_turns(&mut app, &ctx, &wire);
+    app.run("slide.new", json!({})).unwrap();
+    let edited = doc(&app);
+    client::revert(&mut app, 1, true);
+    assert!(client::restore_all(&mut app));
+    assert!(Arc::ptr_eq(&doc(&app), &edited));
+}
+
+#[test]
+fn restore_to_a_middle_request_leaves_the_later_ones_undone() {
+    let (mut app, ctx, wire) = setup();
+    let afters = three_turns(&mut app, &ctx, &wire);
+    client::revert(&mut app, 0, true);
+    assert!(client::restore(&mut app, 1));
+    assert!(Arc::ptr_eq(&doc(&app), &afters[1]));
+    assert!(!client::is_reverted(&app, 0) && !client::is_reverted(&app, 1));
+    assert!(client::is_reverted(&app, 2));
+    // …and the rest still comes back in one step.
+    assert!(client::restore_all(&mut app));
+    assert!(Arc::ptr_eq(&doc(&app), &afters[2]));
+}
+
+#[test]
+fn an_edit_after_reverting_ends_the_rewind() {
+    let (mut app, ctx, wire) = setup();
+    three_turns(&mut app, &ctx, &wire);
+    client::revert(&mut app, 1, true);
+    app.run("slide.new", json!({})).unwrap();
+    assert!(client::rewind(&app).is_none());
+    assert!(!client::restore_all(&mut app));
+}

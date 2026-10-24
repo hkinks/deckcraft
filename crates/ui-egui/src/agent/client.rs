@@ -87,6 +87,24 @@ struct Snapshot {
     after: Arc<Presentation>,
 }
 
+/// A Revert in effect: the deck went back to before request `from`, and `top` is the deck as it
+/// was just before that (the later requests and the person's edits), for Restore all.
+#[derive(Clone, Debug)]
+struct Rewound {
+    uid: u64,
+    from: usize,
+    top: Arc<Presentation>,
+}
+
+/// The requests a Revert undid, while the deck is still at one of their checkpoints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rewind {
+    /// The request the deck went back to before.
+    pub from: usize,
+    /// The requests currently undone, oldest first.
+    pub undone: Vec<usize>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PaneTab {
     #[default]
@@ -130,6 +148,8 @@ pub struct AgentState {
     stop_at: Option<f64>,
     last_heard: f64,
     snapshots: HashMap<String, Snapshot>,
+    /// The deck was put back to before a request: what Restore all brings back.
+    rewound: Option<Rewound>,
     /// Tool calls (and a turn end that arrived behind them), run one per frame in order.
     pending: VecDeque<Pending>,
     /// A workspace file the next tool call waits for.
@@ -168,6 +188,7 @@ impl Default for AgentState {
             stop_at: None,
             last_heard: 0.0,
             snapshots: HashMap::new(),
+            rewound: None,
             pending: VecDeque::new(),
             deck_keys: HashMap::new(),
             conversation_uid: None,
@@ -766,10 +787,15 @@ pub fn revert(app: &mut SlideApp, i: usize, confirmed: bool) -> RevertOutcome {
         }
         return RevertOutcome::NeedsConfirm;
     }
+    // Reverting further back keeps what Restore all brings back.
+    let top = rewind_top(app).unwrap_or_else(|| d.doc.clone());
     // The snapshot itself goes back in (one undoable step), so pictures keep their bytes.
     let replaced = app.session.replace_doc(card.uid, before, &format!("Revert {}", card.label));
     if let Some(a) = app.agent.as_mut() {
         a.state.confirm_revert = None;
+        if replaced {
+            a.state.rewound = Some(Rewound { uid: card.uid, from: i, top });
+        }
     }
     if replaced { RevertOutcome::Replaced } else { RevertOutcome::Unavailable }
 }
@@ -819,15 +845,44 @@ pub fn later_changes(app: &SlideApp, i: usize) -> Option<LaterChanges> {
     Some(LaterChanges { your_edits, requests })
 }
 
-/// Turn `i`'s deck is back to how it was before the turn (it was reverted, or undone).
+/// Turn `i` is undone: a Revert (or Undo) put the deck back to before it or an earlier request.
 pub fn is_reverted(app: &SlideApp, i: usize) -> bool {
-    let Some(card) = app.agent.as_ref().and_then(|a| a.state.turns.get(i)) else { return false };
-    let Some(before) = &card.before else { return false };
-    app.session.active().filter(|d| d.uid == card.uid).is_some_and(|d| Arc::ptr_eq(&d.doc, before))
+    rewind(app).is_some_and(|r| r.undone.contains(&i))
 }
 
-/// Bring a reverted turn back: Redo when that is the next step, otherwise put the deck after the
-/// turn back as one undoable step. False when there is nothing to restore.
+/// The requests undone right now. The deck is at a checkpoint: before a request (the one a Revert
+/// went back to, or one Undo reached), or after one Restore brought back; the requests after that
+/// point, up to the latest, are undone. None once the deck moved on.
+pub fn rewind(app: &SlideApp) -> Option<Rewind> {
+    let a = app.agent.as_ref()?;
+    let d = app.session.active()?;
+    let turns = &a.state.turns;
+    let mine = |i: &usize| turns[*i].uid == d.uid && turns[*i].after.is_some();
+    let ids: Vec<usize> = (0..turns.len()).filter(mine).collect();
+    let at = |x: &Option<Arc<Presentation>>| x.as_ref().is_some_and(|x| Arc::ptr_eq(x, &d.doc));
+    // First the recorded Revert (before its request, or after one restored since).
+    let start = a.state.rewound.as_ref().filter(|r| r.uid == d.uid).and_then(|r| {
+        if at(&turns.get(r.from)?.before) {
+            return Some(r.from);
+        }
+        ids.iter().filter(|j| **j >= r.from).find(|j| at(&turns[**j].after)).map(|j| j + 1)
+    });
+    // Otherwise a request Undo took back.
+    let start = start.or_else(|| ids.iter().copied().find(|i| at(&turns[*i].before)))?;
+    let undone: Vec<usize> = ids.into_iter().filter(|j| *j >= start).collect();
+    (!undone.is_empty()).then(|| Rewind { from: start, undone })
+}
+
+/// The deck as it was before the Revert in effect, if one is.
+fn rewind_top(app: &SlideApp) -> Option<Arc<Presentation>> {
+    rewind(app)?;
+    let a = app.agent.as_ref()?;
+    let d = app.session.active()?;
+    a.state.rewound.as_ref().filter(|r| r.uid == d.uid).map(|r| r.top.clone())
+}
+
+/// Bring the undone requests back up to and including request `i` (later ones stay undone): Redo
+/// when that is the next step, otherwise the deck after `i` goes back in as one undoable step.
 pub fn restore(app: &mut SlideApp, i: usize) -> bool {
     if busy(app) || !is_reverted(app, i) {
         return false;
@@ -839,4 +894,25 @@ pub fn restore(app: &mut SlideApp, i: usize) -> bool {
         return app.run("edit.redo", json!({})).is_ok();
     }
     app.session.replace_doc(card.uid, after, &format!("Restore {}", card.label))
+}
+
+/// Bring back everything the Revert took away (the later requests and the person's edits), as one
+/// step. False when no Revert is in effect.
+pub fn restore_all(app: &mut SlideApp) -> bool {
+    if busy(app) {
+        return false;
+    }
+    let Some(r) = rewind(app) else { return false };
+    let Some(top) = rewind_top(app) else {
+        // Reached by Undo: the latest undone request comes back.
+        return r.undone.last().is_some_and(|l| restore(app, *l));
+    };
+    let Some(uid) = app.session.active().map(|d| d.uid) else { return false };
+    // Undoing the Revert is exact when it is the last step.
+    let undo_revert = app.session.active().is_some_and(|d| d.history.undo.last().is_some_and(|e| Arc::ptr_eq(&e.doc, &top)));
+    let ok = if undo_revert { app.run("edit.undo", json!({})).is_ok() } else { app.session.replace_doc(uid, top, "Restore all requests") };
+    if ok && let Some(a) = app.agent.as_mut() {
+        a.state.rewound = None;
+    }
+    ok
 }
