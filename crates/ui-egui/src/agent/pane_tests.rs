@@ -202,6 +202,8 @@ fn empty_chat_offers_suggestions_that_fill_the_prompt() {
     h.run_steps(2);
     assert_eq!(h.state().agent.as_ref().unwrap().state.input, "Add an agenda slide");
     assert!(wire.sent_of("user_message").is_empty(), "a suggestion fills the box, it doesn't send");
+    // …and puts the caret there, so Enter sends it.
+    assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new("agent_prompt"))));
 }
 
 #[test]
@@ -480,7 +482,7 @@ fn reverting_an_older_request_shows_the_timeline_and_restores_it_all_at_once() {
     h.get_by_label("Go back").click();
     h.run_steps(2);
     assert_eq!(h.query_all_by_label("↺ undone").count(), 3, "every later request is marked undone");
-    h.get_by_label_contains("3 requests undone");
+    h.get_by_label("↺ 3 requests undone");
     h.get_by_label("↻ Restore all").click();
     h.run_steps(2);
     assert_eq!(h.state().session.active().unwrap().doc.slides.len(), n);

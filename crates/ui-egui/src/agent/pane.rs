@@ -390,14 +390,8 @@ fn rewind_banner(app: &SlideApp, ui: &mut Ui, t: &Tokens, running: bool, out: &m
                     let b = b.on_hover_text("Bring back everything the Revert undid, as one step");
                     let clicked = b.clicked();
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(format!("{n} request{} undone · back to before “{prompt}”", if n == 1 { "" } else { "s" }))
-                                    .font(theme::font(12.0))
-                                    .color(t.text),
-                            )
-                            .truncate(),
-                        );
+                        ui.add(egui::Label::new(RichText::new(format!("↺ {n} request{} undone", if n == 1 { "" } else { "s" })).font(theme::font(12.0)).color(t.text)).truncate())
+                            .on_hover_text(format!("The deck is back to how it was before “{prompt}”"));
                     });
                     clicked
                 });
@@ -656,6 +650,7 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     });
     apply(app, action);
     let Some(a) = app.agent.as_mut() else { return };
+    let picked = suggestion.is_some();
     if let Some(s) = suggestion {
         a.state.input = s;
     }
@@ -694,6 +689,11 @@ fn chat(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
     });
     let help = if running { "Enter to queue · Shift+Enter for a new line" } else { "Enter to send · Shift+Enter for a new line" };
     ui.label(RichText::new(help).font(theme::font(META)).color(t.text_faint));
+    if picked {
+        // A picked suggestion is ready to send with Enter (or to edit first). Asked for after the
+        // field is drawn, as the click on the suggestion settles focus before it.
+        ui.memory_mut(|m| m.request_focus(egui::Id::new("agent_prompt")));
+    }
     if enter && a.state.input.ends_with('\n') {
         a.state.input.pop();
     }
