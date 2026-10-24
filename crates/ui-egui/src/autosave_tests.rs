@@ -156,23 +156,3 @@ fn several_offered_decks_can_be_restored_at_once() {
     assert!(h.query_by_label("Restore unsaved work?").is_none());
 }
 
-#[test]
-fn leaving_the_page_only_needs_a_warning_until_the_autosave_has_the_latest_changes() {
-    let store = Store::default();
-    let mut app = app(&store);
-    assert!(!app.needs_leave_warning(), "nothing changed");
-    app.run("slide.new", json!({})).unwrap();
-    assert!(app.needs_leave_warning(), "the change isn't in the autosave copy yet");
-    app.autosave_tick();
-    assert!(!app.needs_leave_warning(), "the copy has it: reopening the page offers it back");
-    app.run("slide.new", json!({})).unwrap();
-    assert!(app.needs_leave_warning(), "a newer change than the copy");
-}
-
-#[test]
-fn without_autosave_every_unsaved_change_warns() {
-    let mut app = SlideApp::new(Session::with_new(), Services::default());
-    app.run("slide.new", json!({})).unwrap();
-    app.autosave_tick();
-    assert!(app.needs_leave_warning());
-}

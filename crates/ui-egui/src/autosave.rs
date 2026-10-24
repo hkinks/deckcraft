@@ -4,7 +4,7 @@
 //! [`RecoveryStore`] as a complete `.deckcraft` file (pictures included); a presentation that is
 //! saved again, or closed, loses its entry. When the app starts and the store holds entries from
 //! an earlier visit (the tab was closed or crashed with unsaved work), the app offers to restore
-//! them. The desktop app has its own AutoRecover (`deckcraft_engine::recovery`).
+//! them. That is why the page never asks "Leave site?" when it is closed. The desktop app has its own AutoRecover (`deckcraft_engine::recovery`).
 
 use std::collections::HashMap;
 
@@ -84,15 +84,6 @@ impl SlideApp {
     /// Any open presentation has changes that aren't saved.
     pub fn any_unsaved(&self) -> bool {
         self.session.documents().iter().any(|d| d.is_dirty())
-    }
-
-    /// Leaving the page would lose work: a presentation has changes the autosave copy doesn't
-    /// have yet (or there is no autosave). Once the copy is current, reopening the page offers it
-    /// back, so the browser's "Leave site?" question isn't needed.
-    pub fn needs_leave_warning(&self) -> bool {
-        self.session.documents().iter().any(|d| {
-            d.is_dirty() && self.autosave.as_ref().is_none_or(|a| a.written.get(&d.uid) != Some(&d.revision))
-        })
     }
 
     /// Write unsaved decks (at most every `interval_ms`), drop entries of saved or closed ones,

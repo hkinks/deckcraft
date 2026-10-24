@@ -56,10 +56,9 @@ pub fn start() {
                         let ctx = cc.egui_ctx.clone();
                         app.set_workspace_factory(Box::new(move |key: &str| Box::new(crate::workspace_web::WebWorkspace::new(ctx.clone(), key))));
                     }
-                    let unsaved = warn_before_leaving();
                     let fonts = std::rc::Rc::default();
                     crate::fonts_web::load_catalog(cc.egui_ctx.clone(), std::rc::Rc::clone(&fonts));
-                    Ok(Box::new(WebShell { app, inbox, agent: Some(agent), unsaved, fonts }))
+                    Ok(Box::new(WebShell { app, inbox, agent: Some(agent), fonts }))
                 }),
             )
             .await;
@@ -83,33 +82,11 @@ struct WebShell {
     inbox: Inbox,
     /// Until the page is known to come from an agent server (otherwise the pane goes away).
     agent: Option<crate::agent_ws::WebAgentTransport>,
-    /// Whether leaving now would lose changes the autosave copy doesn't have yet (read by the
-    /// page's beforeunload handler).
-    unsaved: std::rc::Rc<std::cell::Cell<bool>>,
     /// The agent server's font catalog once it has loaded.
     fonts: FontSlot,
 }
 
 type FontSlot = std::rc::Rc<std::cell::RefCell<Option<(Vec<deckcraft_ui_egui::webfonts::CatalogFamily>, crate::fonts_web::WebFontFetcher)>>>;
-
-/// Ask the browser to confirm leaving the page while changes aren't autosaved yet (a few
-/// seconds after an edit); after that, reopening the page offers the work back.
-fn warn_before_leaving() -> std::rc::Rc<std::cell::Cell<bool>> {
-    let unsaved = std::rc::Rc::new(std::cell::Cell::new(false));
-    let flag = unsaved.clone();
-    let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(move |e: web_sys::BeforeUnloadEvent| {
-        if flag.get() {
-            e.prevent_default();
-            e.set_return_value("You have unsaved changes.");
-        }
-    });
-    if let Some(w) = web_sys::window()
-        && w.add_event_listener_with_callback("beforeunload", cb.as_ref().unchecked_ref()).is_ok()
-    {
-        cb.forget();
-    }
-    unsaved
-}
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -151,7 +128,6 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.app.ui(ui);
-        self.unsaved.set(self.app.needs_leave_warning());
     }
 }
 
