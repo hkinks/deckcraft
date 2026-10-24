@@ -79,3 +79,24 @@ fn arriving_fonts_are_added_and_the_slides_redrawn() {
     app.fonts_tick();
     assert!(app.fonts_generation() > before, "the canvas and thumbnails are drawn again");
 }
+
+#[test]
+fn the_interface_face_is_fetched_at_start_and_becomes_the_first_ui_font() {
+    let Some(face) = deckcraft_fonts::CRAFT_FONTS.first() else { return };
+    if deckcraft_fonts::CRAFT_FONTS.iter().any(|f| f.family == crate::webfonts::UI_FAMILY) {
+        return; // the build embeds it
+    }
+    let wire = Fake::default();
+    let mut s = Session::with_new();
+    s.execute("slide.new", &json!({})).unwrap();
+    let mut app = SlideApp::new(s, Services::default());
+    let inter = CatalogFamily { family: "Inter".into(), files: vec!["inter/Inter-Italic[opsz,wght].ttf".into(), "inter/Inter[opsz,wght].ttf".into()] };
+    app.set_font_catalog(vec![inter], Box::new(wire.clone()));
+    assert_eq!(wire.0.borrow().asked, vec!["Inter".to_string()], "asked for before any deck needs it");
+    wire.0.borrow_mut().deliver.push(("Inter".into(), vec![b"not a font".to_vec(), face.bytes.to_vec()]));
+    app.fonts_tick();
+    assert!(crate::theme::has_ui_face());
+    let defs = crate::theme::font_definitions(&[]);
+    assert_eq!(defs.families[&egui::FontFamily::Proportional][0], "ui-regular");
+    assert_eq!(defs.families[&egui::FontFamily::Name("bold".into())][0], "ui-semibold");
+}

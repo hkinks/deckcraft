@@ -24,6 +24,9 @@ pub trait FontFetcher {
     fn poll(&mut self) -> Vec<(String, Vec<Vec<u8>>)>;
 }
 
+/// The interface family, fetched from the catalog when the build doesn't embed it.
+pub const UI_FAMILY: &str = "Inter";
+
 pub struct WebFonts {
     catalog: Vec<CatalogFamily>,
     fetcher: Box<dyn FontFetcher>,
@@ -77,7 +80,15 @@ impl WebFonts {
 impl SlideApp {
     /// Offer `catalog` (the agent server's fonts) through `fetcher`.
     pub fn set_font_catalog(&mut self, catalog: Vec<CatalogFamily>, fetcher: Box<dyn FontFetcher>) {
-        self.webfonts = Some(WebFonts { catalog, fetcher, requested: HashSet::new(), seen: None, generation: 0 });
+        let mut w = WebFonts { catalog, fetcher, requested: HashSet::new(), seen: None, generation: 0 };
+        // The interface face, when the build embeds none (see `theme::set_ui_face`).
+        if !crate::theme::has_ui_face() && !deckcraft_fonts::CRAFT_FONTS.iter().any(|f| f.family == UI_FAMILY)
+            && let Some(c) = w.offers(UI_FAMILY).cloned()
+        {
+            w.requested.insert(c.family.to_lowercase());
+            w.fetcher.fetch(&c);
+        }
+        self.webfonts = Some(w);
     }
 
     /// Families the server offers on demand (for the font menu).
@@ -95,6 +106,13 @@ impl SlideApp {
         let Some(mut w) = self.webfonts.take() else { return };
         let mut added = 0;
         for (family, files) in w.fetcher.poll() {
+            if family.eq_ignore_ascii_case(UI_FAMILY) && !crate::theme::has_ui_face() {
+                // The upright file (the catalog lists it beside the italic one).
+                let upright = w.offers(UI_FAMILY).and_then(|c| c.files.iter().position(|f| !f.to_lowercase().contains("italic")));
+                if let Some(bytes) = upright.and_then(|k| files.get(k)) && crate::theme::set_ui_face(bytes.clone()) {
+                    self.styled = false;
+                }
+            }
             let mut n = 0;
             for bytes in files {
                 n += FontDb::global().add_font(bytes);

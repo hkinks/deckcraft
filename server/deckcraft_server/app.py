@@ -22,6 +22,17 @@ class CachedStatic(StaticFiles):
         return r
 
 
+class SiteStatic(StaticFiles):
+    """The built editor: index.html names the content-hashed bundle, so browsers must check it
+    on every load (or keep running an old build); the hashed files may be cached."""
+
+    def file_response(self, full_path, *args, **kwargs):
+        r = super().file_response(full_path, *args, **kwargs)
+        if str(full_path).endswith(".html"):
+            r.headers["cache-control"] = "no-cache"
+        return r
+
+
 def create_app(
     settings: Settings,
     store: Store,
@@ -58,5 +69,5 @@ def create_app(
     if settings.fonts_dir is not None and settings.fonts_dir.exists():
         app.mount("/fonts", CachedStatic(directory=settings.fonts_dir), name="fonts")
     if settings.site_dir is not None and settings.site_dir.exists():
-        app.mount("/", StaticFiles(directory=settings.site_dir, html=True), name="site")
+        app.mount("/", SiteStatic(directory=settings.site_dir, html=True), name="site")
     return app

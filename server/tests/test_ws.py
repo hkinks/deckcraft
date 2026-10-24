@@ -174,7 +174,10 @@ def test_index_served_when_site_dir_set(tmp_path, env):
     settings = Settings.model_validate({"default_provider": "f", "providers": {"f": {"kind": "openai_compat", "base_url": "http://x/v1", "model": "m"}},
                                         "site_dir": str(site), "session_secret": "x"})
     c = TestClient(create_app(settings, store))
-    assert "deckcraft_canvas" in c.get("/").text
+    r = c.get("/")
+    assert "deckcraft_canvas" in r.text
+    # A new build must show up on the next load: the page names the hashed bundle.
+    assert r.headers["cache-control"] == "no-cache"
 
 
 def test_hidden_tab_pauses_the_tool_timeout(env):

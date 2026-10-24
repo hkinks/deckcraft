@@ -165,9 +165,43 @@ pub fn install_fonts_with(ctx: &egui::Context, extra: &[std::sync::Arc<deckcraft
     ctx.set_fonts(font_definitions(extra));
 }
 
+/// The interface face fetched at run time (Inter, a variable font, from the agent server's font
+/// catalog) when the build embeds none: it comes first in every interface family.
+static UI_FACE: std::sync::RwLock<Option<std::sync::Arc<Vec<u8>>>> = std::sync::RwLock::new(None);
+
+/// Use `bytes` (a variable font with a `wght` axis) as the interface face; reinstall the fonts
+/// afterwards. A face that isn't a font is ignored.
+pub fn set_ui_face(bytes: Vec<u8>) -> bool {
+    if skrifa_ok(&bytes) {
+        if let Ok(mut f) = UI_FACE.write() {
+            *f = Some(std::sync::Arc::new(bytes));
+            return true;
+        }
+    }
+    false
+}
+
+/// Is there an interface face from [`set_ui_face`]?
+pub fn has_ui_face() -> bool {
+    UI_FACE.read().is_ok_and(|f| f.is_some())
+}
+
+fn skrifa_ok(bytes: &[u8]) -> bool {
+    // An OpenType/TrueType header: 0x00010000, 'true' or 'OTTO'.
+    matches!(bytes.get(..4), Some([0, 1, 0, 0] | b"true" | b"OTTO"))
+}
+
+/// The face at weight `wght` (400 regular, 600 semibold).
+fn ui_face_at(bytes: &std::sync::Arc<Vec<u8>>, wght: f32) -> FontData {
+    let mut d = FontData::from_owned((**bytes).clone());
+    d.tweak.coords = egui::epaint::text::VariationCoords::new([("wght", wght)]);
+    d
+}
+
 /// The interface font definitions; see [`install_fonts_with`].
 pub fn font_definitions(extra: &[std::sync::Arc<deckcraft_fonts::FontFace>]) -> FontDefinitions {
     let mut defs = FontDefinitions::default();
+    let face = UI_FACE.read().ok().and_then(|f| f.clone());
     let mut names = vec![];
     for (i, f) in deckcraft_fonts::CRAFT_FONTS.iter().enumerate() {
         let wanted = (f.family == "Inter" && (f.style == "Regular" || f.style == "SemiBold" || f.style == "Bold"))
@@ -190,6 +224,15 @@ pub fn font_definitions(extra: &[std::sync::Arc<deckcraft_fonts::FontFace>]) -> 
     let mut bold: Vec<String> = names.iter().filter(|(fam, st, _)| *fam == "Inter" && *st == "SemiBold").map(|(_, _, n)| n.clone()).collect();
     bold.extend(defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
     defs.families.insert(FontFamily::Name("bold".into()), bold);
+    if let Some(face) = face {
+        defs.font_data.insert("ui-regular".into(), std::sync::Arc::new(ui_face_at(&face, 400.0)));
+        defs.font_data.insert("ui-semibold".into(), std::sync::Arc::new(ui_face_at(&face, 600.0)));
+        for (family, name) in [(FontFamily::Proportional, "ui-regular"), (FontFamily::Name("bold".into()), "ui-semibold")] {
+            if let Some(list) = defs.families.get_mut(&family) {
+                list.insert(0, name.into());
+            }
+        }
+    }
     add_fallback_faces(&mut defs, extra);
     // The Japanese interface face (the first one when Inter isn't embedded) hints its en and em
     // dashes, bars thinner than a pixel, down to nothing, so they drew as gaps in interface text;
