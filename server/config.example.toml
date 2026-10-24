@@ -22,6 +22,14 @@ label = "Claude Sonnet 5.5"
 vision = true
 effort = "medium"
 
+# Claude with your own Claude subscription, through the Claude Code CLI on this machine
+# (signed in with `claude login`; no key). Personal local use only, not a shared server.
+[providers.claude-subscription]
+kind = "claude_code"
+model = "claude-sonnet-5-5"
+label = "Claude Sonnet 5.5 (subscription)"
+effort = "medium"
+
 [providers.qwen-local]
 kind = "openai_compat"
 base_url = "http://127.0.0.1:8080/v1"   # llama-swap

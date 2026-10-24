@@ -251,3 +251,39 @@ async def test_web_tools_run_on_the_server_and_are_reported_to_the_browser():
     assert browser.activity == [("web_search", {"query": "aurora"}, True)]
     assert "web_search" in seen_tools[0] and "run_command" in seen_tools[0]
     assert r.actions == [], "searching isn't a change to the deck"
+
+
+class DrivingProvider:
+    """Runs its own tool loop (like the Claude Code provider) and calls each tool through `execute`."""
+
+    kind = "driving"
+    vision = False
+
+    def __init__(self, calls, text="Done."):
+        self.calls = calls
+        self.text = text
+        self.results = []
+
+    async def drive(self, system, history, tools, execute, on_delta, stop):
+        for i, (name, input) in enumerate(self.calls):
+            self.results.append(await execute(f"c{i}", name, input))
+        await on_delta(self.text)
+        return self.text, {"input_tokens": 5, "output_tokens": 7}
+
+
+async def test_a_provider_that_drives_its_own_loop_runs_tools_through_the_same_checks():
+    p = DrivingProvider([("run_command", {"command": "slide.new", "slide": 2}), ("format_disk", {}), ("inspect_slide", {"slide": 1})])
+    b = FakeBrowser()
+    r, deltas, history = await collect(p, b)
+    assert [c[0] for c in b.calls] == ["run_command", "inspect_slide"]
+    assert [x.ok for x in p.results] == [True, False, True]
+    assert r.status == "ok" and r.actions == ["slide.new"] and r.slides == [2]
+    assert r.text == "Done." and deltas == ["Done."] and r.usage == {"input_tokens": 5, "output_tokens": 7}
+    assert history[-1].text == "Done."  # the reply is kept for the next turn's context
+
+
+async def test_a_driving_provider_is_cut_off_at_the_tool_call_limit():
+    p = DrivingProvider([("run_command", {"command": "slide.new"})] * 3)
+    r, _, _ = await collect(p, FakeBrowser(), limits=Limits(max_tool_calls_per_turn=2))
+    assert [x.ok for x in p.results] == [True, True, False]
+    assert r.status == "limit" and "tool call limit" in r.error

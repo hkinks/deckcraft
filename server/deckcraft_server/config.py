@@ -20,15 +20,17 @@ _REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class ProviderCfg(BaseModel):
-    kind: Literal["anthropic", "openai_compat"]
-    base_url: str
+    # claude_code: Claude through the Claude Code CLI on this machine, signed in with the person's
+    # Claude subscription (no key); for personal local use, not for a shared server.
+    kind: Literal["anthropic", "openai_compat", "claude_code"]
+    base_url: str = ""
     api_key: str = ""
     model: str
     vision: bool = False
     # Shown in the agent pane's model picker; the provider id when empty.
     label: str = ""
     max_tokens: int = 16000
-    # Anthropic only: adaptive thinking and effort (Sonnet 5.5 defaults to high; medium suits agent loops).
+    # Anthropic and Claude Code: adaptive thinking and effort (Sonnet 5.5 defaults to high; medium suits agent loops).
     thinking: bool = True
     effort: str | None = "medium"
 
