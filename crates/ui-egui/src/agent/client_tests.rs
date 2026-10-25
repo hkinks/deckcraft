@@ -757,3 +757,12 @@ fn an_edit_after_reverting_ends_the_rewind() {
     assert!(client::rewind(&app).is_none());
     assert!(!client::restore_all(&mut app));
 }
+
+#[test]
+fn steps_read_as_plain_words_not_tool_names() {
+    assert_eq!(client::step_label("set_text", &json!({})), "Edited text");
+    assert_eq!(client::step_label("render_slide", &json!({})), "Looked at the slide");
+    assert_eq!(client::step_label("read_workspace_file", &json!({"path": "notes/brief.md"})), "Read notes/brief.md");
+    assert_eq!(client::step_label("run_command", &json!({"command": "format.bold"})), "format.bold");
+    assert_eq!(client::step_label("some_new_tool", &json!({})), "Some new tool");
+}

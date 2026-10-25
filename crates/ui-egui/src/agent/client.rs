@@ -462,10 +462,7 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
             ContentPart::Image { .. } => None,
         })
         .unwrap_or_default();
-    let label = match name.as_str() {
-        "run_command" => input.get("command").and_then(Value::as_str).unwrap_or("run_command").to_string(),
-        _ => name,
-    };
+    let label = step_label(&name, &input);
     if let Some(n) = note {
         client.state.items.push(ChatItem::Notice("You edited the deck; the agent was told.".into()));
         content.push(ContentPart::Text { text: n });
@@ -474,14 +471,43 @@ fn run_tool(app: &mut SlideApp, ctx: &egui::Context, client: &mut AgentClient, i
     client.send(ClientMsg::ToolResult { v: VERSION, id, ok, content });
 }
 
+/// One of the agent's steps as the person reads it in the chat: what it did, not the tool's name.
+pub fn step_label(name: &str, input: &Value) -> String {
+    let path = || input.get("path").and_then(Value::as_str).unwrap_or("a file");
+    match name {
+        "run_command" => input.get("command").and_then(Value::as_str).unwrap_or("Ran a command").to_string(),
+        "batch" => "Ran several commands".into(),
+        "list_commands" => "Looked up commands".into(),
+        "inspect_document" | "get_deck_json" => "Read the deck".into(),
+        "inspect_slide" => "Read the slide".into(),
+        "render_slide" => "Looked at the slide".into(),
+        "add_slide" => "Added a slide".into(),
+        "go_to_slide" => "Went to a slide".into(),
+        "add_shape" => "Added a shape".into(),
+        "add_text_box" => "Added a text box".into(),
+        "set_text" => "Edited text".into(),
+        "insert_table" => "Inserted a table".into(),
+        "insert_chart" => "Inserted a chart".into(),
+        "select" => "Selected".into(),
+        "patch_deck_json" => "Edited the deck".into(),
+        "list_workspace_files" => "Listed workspace files".into(),
+        "read_workspace_file" => format!("Read {}", path()),
+        "insert_workspace_image" => format!("Inserted {}", path()),
+        "apply_workspace_template" => format!("Applied the design of {}", path()),
+        "web_search" => "Web search".into(),
+        "web_fetch" => "Read web page".into(),
+        other => {
+            let words = other.replace('_', " ");
+            let mut c = words.chars();
+            c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+        }
+    }
+}
+
 fn handle(app: &mut SlideApp, client: &mut AgentClient, m: ServerMsg) {
     match m {
         ServerMsg::Activity { name, ok, summary } => {
-            let name = match name.as_str() {
-                "web_search" => "Web search".to_string(),
-                "web_fetch" => "Read web page".to_string(),
-                _ => name,
-            };
+            let name = step_label(&name, &Value::Null);
             client.state.items.push(ChatItem::Tool { name, ok, summary });
             client.state.last_heard = crate::now_ms();
         }
