@@ -500,11 +500,11 @@ fn sign_in(app: &mut SlideApp, ui: &mut Ui, error: Option<String>) {
     let Some(a) = app.agent.as_mut() else { return };
     ui.label("Sign in to the DeckCraft agent server.");
     ui.add_space(6.0);
-    ui.label("Username");
-    field(ui, |ui| ui.add(egui::TextEdit::singleline(&mut a.state.login_user).frame(egui::Frame::NONE).desired_width(f32::INFINITY)));
-    ui.label("Password");
+    let user_label = ui.label("Username").id;
+    field(ui, |ui| ui.add(egui::TextEdit::singleline(&mut a.state.login_user).frame(egui::Frame::NONE).desired_width(f32::INFINITY)).labelled_by(user_label));
+    let password_label = ui.label("Password").id;
     let pw = field(ui, |ui| {
-        ui.add(egui::TextEdit::singleline(&mut a.state.login_password).password(true).frame(egui::Frame::NONE).desired_width(f32::INFINITY))
+        ui.add(egui::TextEdit::singleline(&mut a.state.login_password).password(true).frame(egui::Frame::NONE).desired_width(f32::INFINITY)).labelled_by(password_label)
     });
     if let Some(e) = error {
         ui.colored_label(egui::Color32::from_rgb(0xC4, 0x2B, 0x1C), e);
@@ -919,7 +919,7 @@ fn instructions(app: &mut SlideApp, ui: &mut Ui, t: &Tokens) {
         egui::ScrollArea::vertical().id_salt("agent_instructions").max_height(h).auto_shrink([false, true]).show(ui, |ui| {
             let r = ui.add(egui::TextEdit::multiline(draft).frame(egui::Frame::NONE).desired_width(f32::INFINITY).desired_rows(10).font(theme::font(12.5)));
             r.widget_info(move || {
-                let mut info = egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Agent instructions");
+                let mut info = egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Agent instructions");
                 info.current_text_value = Some(shown.clone());
                 info
             });

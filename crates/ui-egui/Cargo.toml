@@ -20,18 +20,22 @@ deckcraft-engine = { workspace = true }
 deckcraft-format = { workspace = true }
 deckcraft-mcp = { workspace = true }
 deckcraft-media = { workspace = true }
-egui = { workspace = true }
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 # Reading .docx files and picture sizes in the workspace.
 zip = { workspace = true }
 image = { workspace = true }
+web-time = { workspace = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-update = { workspace = true }
 
 [dev-dependencies]
+skrifa = { workspace = true }
+# kittest's own dev-dependencies do not propagate; tests need both font features explicitly.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 
 [build-dependencies]

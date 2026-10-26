@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 
 use serde_json::{Value, json};
 
-use crate::*;
+use crate::{EngineError, Session, command_specs, sample};
 
 /// Commands that touch the file system, other windows or real time; the soak drives the rest.
 fn skipped(id: &str) -> bool {
@@ -17,6 +17,8 @@ fn skipped(id: &str) -> bool {
         || id.starts_with("window.")
         || id.starts_with("show.")
         || id.starts_with("media.")
+        // Whole-document JSON reads and patches: random params never form a patch or a model.
+        || id.starts_with("doc.")
 }
 
 /// xorshift64*: tiny, deterministic, no dependency.

@@ -11,6 +11,8 @@ const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "mov", "webm"];
 const CANVAS_ID: &str = "deckcraft_canvas";
 const LOADING_ID: &str = "deckcraft_loading";
 
+/// Start the browser shell: install logging, locate the canvas, launch the eframe runner,
+/// build the sample or blank deck, and replace the loading element when launch finishes.
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
     wasm_bindgen_futures::spawn_local(async {
@@ -36,6 +38,7 @@ pub fn start() {
                     if let Some(rs) = &cc.wgpu_render_state {
                         log::info!("deckcraft-web {}: wgpu backend {:?}", env!("CARGO_PKG_VERSION"), rs.adapter.get_info().backend);
                     }
+                    deckcraft_ui_egui::install_ime_pass_hooks(&cc.egui_ctx);
                     let inbox: Inbox = Inbox::default();
                     let mut app = SlideApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
                     let q = query();
@@ -89,11 +92,24 @@ struct WebShell {
 type FontSlot = std::rc::Rc<std::cell::RefCell<Option<(Vec<deckcraft_ui_egui::webfonts::CatalogFamily>, crate::fonts_web::WebFontFetcher)>>>;
 
 impl eframe::App for WebShell {
+    /// Delegate one eframe logic pass to the wrapped application.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
-        for f in dropped {
-            // Capture the document and slide now. The bytes arrive later, after the user may
-            // have switched slides.
+        if let Some((catalog, fetcher)) = self.fonts.borrow_mut().take() {
+            self.app.set_font_catalog(catalog, Box::new(fetcher));
+        }
+        if self.agent.as_ref().is_some_and(|a| a.no_server()) {
+            self.app.agent = None;
+            self.agent = None;
+        }
+        self.app.logic(ctx);
+    }
+
+    /// Consume browser drops with fresh input, capture the identity before the asynchronous read,
+    /// and deliver the id, name, and bytes through the inbox.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Browsers cannot read dropped files synchronously. Consume this pass's drops here, with
+        // fresh input, and capture the document/slide before the asynchronous read finishes.
+        for f in std::mem::take(&mut raw.dropped_files) {
             let id = self.app.begin_external_file("drop");
             let inbox = self.inbox.clone();
             let ctx = ctx.clone();
@@ -112,18 +128,7 @@ impl eframe::App for WebShell {
                 }
             });
         }
-        if let Some((catalog, fetcher)) = self.fonts.borrow_mut().take() {
-            self.app.set_font_catalog(catalog, Box::new(fetcher));
-        }
-        if self.agent.as_ref().is_some_and(|a| a.no_server()) {
-            self.app.agent = None;
-            self.agent = None;
-        }
-        self.app.logic(ctx);
-    }
-
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+        self.app.raw_input_hook(ctx, raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
